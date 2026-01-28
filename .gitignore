@@ -1,0 +1,19 @@
+# Python artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.venv/
+venv/
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Large data/Model checkpoints (relevant for your ConvLSTM)
+*.h5
+*.pth
+*.ckpt
