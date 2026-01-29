@@ -2,6 +2,7 @@ from typing import Dict
 import numpy as np
 import xarray as xr
 import spyndex
+import gc
 
 
 # -------------------------------------------------------------- CONSTANTS --------------------------------------------------------------------------------------
@@ -140,7 +141,10 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
     normalizes values to [0, 1], and removes raw source bands.
     """
 
-    # 1. Create validity mask: Reflectance must be within physical limits
+    # 1. Get list of all bands
+    all_b_bands = [v for v in ds.data_vars if v.startswith("B") and v[1:].isalnum()]
+
+    # 2. Create validity mask: Reflectance must be within physical limits
     is_valid = (
         (ds.B04 > REFLECTANCE_MIN)
         & (ds.B04 <= REFLECTANCE_MAX)
@@ -148,25 +152,22 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
         & (ds.B08 <= REFLECTANCE_MAX)
     )
 
-    # 2. Update existing quality masks with physical validity
+    # 3. Update existing quality masks with physical validity
     ds["quality_mask_basic"] = (ds["mask_phys_basic"] & is_valid).astype("uint8")
     ds["quality_mask_strict"] = (ds["mask_phys_strict"] & is_valid).astype("uint8")
+    del is_valid
+    gc.collect()
 
-    # 3. Apply masks and normalize to [0, 1] range
+    # 4. Apply masks and normalize to [0, 1] range
     # Values outside the mask become NaN; valid values are scaled
-    ds["B04_basic"] = (
-        ds.B04.where(ds.quality_mask_basic == 1, np.nan) / NORM_FACTOR
-    ).astype("float32")
-    ds["B08_basic"] = (
-        ds.B08.where(ds.quality_mask_basic == 1, np.nan) / NORM_FACTOR
-    ).astype("float32")
+    for band in all_b_bands:
+        ds[f"{band}_basic"] = (
+            ds[band].where(ds.quality_mask_basic == 1, np.nan) / NORM_FACTOR
+        ).astype("float32")
 
-    ds["B04_strict"] = (
-        ds.B04.where(ds.quality_mask_strict == 1, np.nan) / NORM_FACTOR
-    ).astype("float32")
-    ds["B08_strict"] = (
-        ds.B08.where(ds.quality_mask_strict == 1, np.nan) / NORM_FACTOR
-    ).astype("float32")
+        ds[f"{band}_strict"] = (
+            ds[band].where(ds.quality_mask_strict == 1, np.nan) / NORM_FACTOR
+        ).astype("float32")
 
     # --- CLEANUP ---
     # Drop original raw bands and intermediate masks to save memory and bands that will not be used
@@ -219,13 +220,13 @@ def calculate_s2_index(
     )
 
     # --- SANITY CHECK ---
-    if index_name == "NDVI":
-        assert (
-            ds[index_var] > NDVI_MAX
-        ).any() is False, f"Found NDVI values greater than {NDVI_MAX}"
-        assert (
-            ds[index_var] < NDVI_MIN
-        ).any() is False, f"Found NDVI values smaller than {NDVI_MIN}"
+    if "NDVI" in index_var:
+        # Wir berechnen das tatsächliche Max/Min und vergleichen es
+        actual_max = ds[index_var].max().values
+        actual_min = ds[index_var].min().values
+
+        assert actual_max <= NDVI_MAX, f"NDVI too high: {actual_max}"
+        assert actual_min >= NDVI_MIN, f"NDVI too low: {actual_min}"
 
     # The number of NaNs in the result must exactly match the NaNs in the input bands
     if mask_type == "basic":
@@ -239,7 +240,7 @@ def calculate_s2_index(
             == (ds.quality_mask_strict == 0).sum().values
         ), "Number of NANs mismatch"
 
-    ds = ds.drop_vars([f"B04_{mask_type}", f"B08_{mask_type}"], errors="ignore")
+    # ds = ds.drop_vars([f"B04_{mask_type}", f"B08_{mask_type}"], errors="ignore")
 
     return ds
 

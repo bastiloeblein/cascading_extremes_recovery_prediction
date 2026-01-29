@@ -3,6 +3,7 @@ import xarray as xr
 from scipy.ndimage import uniform_filter
 import spyndex
 from typing import Dict
+import gc
 
 # S1 Bandnamen (VH/VV)
 BAND_MAP_S1: Dict[str, str] = {
@@ -40,6 +41,14 @@ def find_global_veg_clipping_values(
         # 3. Combine masks: pixels must be vegetation AND contain valid SAR data
         combined_mask = veg_mask & sar_valid
 
+        # 4. Optional (for better RAM usage)
+        # Subsampling directly on dataset, before calling .values
+        # Only select every 10. pixel -> saving 90% RAM sampling
+        # sample_vv = ds.vv.isel(x=slice(0, None, 10), y=slice(0, None, 10))
+        # sample_vh = ds.vh.isel(x=slice(0, None, 10), y=slice(0, None, 10))
+        # vv_veg = sample_vv.where(combined_mask).values.flatten()
+        # vh_veg = sample_vh.where(combined_mask).values.flatten()
+
         # 4. Extract valid SAR values and flatten into a 1D array
         # Using .where() to nullify non-veg pixels before flattening
         vv_veg = ds.vv.where(combined_mask).values.flatten()
@@ -58,6 +67,8 @@ def find_global_veg_clipping_values(
             )
             all_vv_samples.append(vv_veg[indices])
             all_vh_samples.append(vh_veg[indices])
+        del vv_veg, vh_veg  # , sample_vv, sample_vh
+        gc.collect()
 
     # 7. Compute the global 99.5th percentile across the concatenated pool of all samples
     # This acts as the clipping threshold to remove extreme outliers/noise
@@ -112,6 +123,10 @@ def fast_lee_filter_optimized(da, size=7, cu=0.25):
     img_mean = (img_mean_raw * s2) / count_valid
     img_sqr_mean = (img_sqr_mean_raw * s2) / count_valid
 
+    # Free RAM
+    del img_mean_raw, img_sqr_mean_raw
+    gc.collect()
+
     # Calculate local variance (In-place to save memory)
     img_var = np.maximum(0, img_sqr_mean - img_mean**2)
 
@@ -122,6 +137,10 @@ def fast_lee_filter_optimized(da, size=7, cu=0.25):
 
     # Force weights to 0 in homogeneous areas (simple noise reduction)
     weights[img_var < noise_var] = 0
+
+    # Free RAM
+    del img_var, noise_var
+    gc.collect()
 
     # 8. Final reconstruction (Overwriting 'img' to return the result)
     img = img_mean + weights * (img - img_mean)
