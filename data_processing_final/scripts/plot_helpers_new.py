@@ -79,6 +79,116 @@ def plot_acquisition_timelines(ds):
     plt.show()
 
 
+def plot_acquisition_timelines_filtered(ds, precip_end_date):
+    # 1. Setup Dates
+    ref_date = pd.to_datetime(precip_end_date)
+    start_obs = ref_date - pd.DateOffset(months=6)
+    end_obs = ref_date + pd.DateOffset(months=6)
+
+    # 2. Extract and Filter Timestamps
+    t1_all = pd.to_datetime(ds.time_sentinel_1_rtc.values)
+    t2_all = pd.to_datetime(ds.time_sentinel_2_l2a.values)
+
+    t1 = t1_all[(t1_all >= start_obs) & (t1_all <= end_obs)]
+    t2 = t2_all[(t2_all >= start_obs) & (t2_all <= end_obs)]
+
+    # 3. Define 5-day intervals (Bins) relative to precip_end_date
+    # Generate bins from start to end in 5-day steps
+    bins = pd.date_range(start=start_obs, end=end_obs + pd.Timedelta(days=5), freq="5D")
+    bin_centers = bins[:-1] + pd.Timedelta(days=2.5)
+
+    fig, ax = plt.subplots(figsize=(15, 7))
+
+    # --- ROW 1: Sentinel-1 (Radar) ---
+    ax.vlines(t1, 0.8, 1.2, color="royalblue", alpha=0.4, linewidth=1)
+    ax.scatter(
+        t1, [1.0] * len(t1), color="royalblue", s=20, alpha=0.6, label="S1 (Radar)"
+    )
+
+    # --- ROW 2: Sentinel-2 (Optical) ---
+    ax.vlines(t2, 1.8, 2.2, color="forestgreen", alpha=0.4, linewidth=1)
+    ax.scatter(
+        t2, [2.0] * len(t2), color="forestgreen", s=20, alpha=0.6, label="S2 (Optical)"
+    )
+
+    # --- ROW 3: 5-Day Bins ---
+    ax.vlines(bins, 2.7, 3.3, color="red", alpha=0.7, linewidth=1.2)
+
+    # Calculate counts per bin and plot markers
+    for i in range(len(bins) - 1):
+        mask1 = (t1 >= bins[i]) & (t1 < bins[i + 1])
+        mask2 = (t2 >= bins[i]) & (t2 < bins[i + 1])
+
+        c1, c2 = mask1.sum(), mask2.sum()
+        center = bin_centers[i]
+
+        if c2 > 0:
+            ax.scatter(center, 3.1, marker="o", color="forestgreen", s=50, zorder=3)
+            ax.text(
+                center,
+                2.50,
+                str(c2),
+                color="forestgreen",
+                ha="center",
+                fontsize=10,
+                fontweight="bold",
+            )
+
+        if c1 > 0:
+            ax.scatter(center, 2.9, marker="x", color="royalblue", s=50, zorder=3)
+            ax.text(
+                center,
+                3.35,
+                str(c1),
+                color="royalblue",
+                ha="center",
+                fontsize=10,
+                fontweight="bold",
+            )
+
+    # --- Styling ---
+    ax.set_xlim(start_obs, end_obs)
+    ax.set_ylim(0.5, 4.0)
+    ax.set_yticks([1.0, 2.0, 3.0])
+    ax.set_yticklabels(
+        [
+            f"Sentinel-1\n(n={len(t1)})",
+            f"Sentinel-2\n(n={len(t2)})",
+            "5-Day Intervals\n(Counts)",
+        ],
+        fontsize=11,
+        fontweight="bold",
+    )
+
+    # X-Axis: Major ticks every month, minor ticks every 5 days
+    ax.xaxis.set_major_locator(mdates.MonthLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
+    ax.xaxis.set_minor_locator(mdates.DayLocator(interval=5))
+    plt.xticks(rotation=0)
+
+    ax.set_title(
+        f"Acquisition Density: ±6 Months from {ref_date.strftime('%Y-%m-%d')}",
+        fontsize=15,
+        pad=25,
+    )
+    ax.grid(axis="x", which="both", linestyle="--", alpha=0.3)
+
+    # Event Highlight
+    ax.axvline(ref_date, color="black", linestyle="-", linewidth=2.5, zorder=4)
+    ax.text(
+        ref_date,
+        3.8,
+        "EVENT",
+        color="black",
+        ha="center",
+        fontweight="bold",
+        bbox=dict(facecolor="white", edgecolor="black", boxstyle="round,pad=0.3"),
+    )
+
+    plt.tight_layout()
+    plt.show()
+
+
 def plot_rgb(
     ds: xr.Dataset,
     timestep: int,

@@ -52,7 +52,7 @@ def find_global_veg_clipping_values(
         # 4. Extract valid SAR values and flatten into a 1D array
         # Using .where() to nullify non-veg pixels before flattening
         vv_veg = ds.vv.where(combined_mask).values.flatten()
-        vh_veg = vh_veg = ds.vh.where(combined_mask).values.flatten()
+        vh_veg = ds.vh.where(combined_mask).values.flatten()
 
         # 5. Remove NaNs (non-vegetation or missing data)
         valid_indices = ~np.isnan(vv_veg)
@@ -186,7 +186,7 @@ def normalize_s1_vars(ds, vv_max, vh_max, bands=["vv", "vh"]):
 
         # 2. Perform Min-Max scaling (Min is assumed 0 due to previous clipping)
         # Overwriting the variable directly saves memory
-        ds[band] = ds[band] / max_values[band]
+        ds[band] = (ds[band] / max_values[band]).clip(0, 1).astype(np.float32)
 
         # 3. Validation: Ensure no new NaNs were introduced (e.g., by division errors)
         nans_after = int(ds[band].isnull().sum())

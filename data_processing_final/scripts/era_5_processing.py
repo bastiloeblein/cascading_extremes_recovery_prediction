@@ -299,12 +299,17 @@ def create_uniform_era5_features(
     # 1. Define all variables to be broadcasted dynamically
     era5_vars = [i for i in era5_aligned.data_vars]
 
+    # 2. Get list of vars that have time_sentinel_2_l2a as time dim
+    valid_vars = [
+        v for v in ds_target.data_vars if target_time_dim in ds_target[v].dims
+    ]
+
+    template_var = valid_vars[0]
+    template_da = ds_target[template_var]
+
     # 2. Prepare the target templates and coordinates
     # We use a known S2 band (e.g., 'B04' or 'y') as the full 3D template for shape inference.
     try:
-        template_da = ds_target[
-            "B04"
-        ]  # Use time coordinate for simple broadcasting template
         y_coord = ds_target["y"]
         x_coord = ds_target["x"]
     except KeyError as e:

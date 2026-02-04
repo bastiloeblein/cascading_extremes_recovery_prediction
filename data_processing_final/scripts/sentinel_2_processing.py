@@ -145,7 +145,7 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
     all_b_bands = [v for v in ds.data_vars if v.startswith("B") and v[1:].isalnum()]
 
     # 2. Create validity mask: Reflectance must be within physical limits
-    is_valid = (
+    core_is_valid = (
         (ds.B04 > REFLECTANCE_MIN)
         & (ds.B04 <= REFLECTANCE_MAX)
         & (ds.B08 > REFLECTANCE_MIN)
@@ -153,26 +153,34 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
     )
 
     # 3. Update existing quality masks with physical validity
-    ds["quality_mask_basic"] = (ds["mask_phys_basic"] & is_valid).astype("uint8")
-    ds["quality_mask_strict"] = (ds["mask_phys_strict"] & is_valid).astype("uint8")
-    del is_valid
+    ds["quality_mask_basic"] = (ds["mask_phys_basic"] & core_is_valid).astype("uint8")
+    ds["quality_mask_strict"] = (ds["mask_phys_strict"] & core_is_valid).astype("uint8")
+    del core_is_valid
     gc.collect()
 
     # 4. Apply masks and normalize to [0, 1] range
     # Values outside the mask become NaN; valid values are scaled
     for band in all_b_bands:
+        is_this_band_valid = (ds[band] > REFLECTANCE_MIN) & (
+            ds[band] <= REFLECTANCE_MAX
+        )
+
         ds[f"{band}_basic"] = (
-            ds[band].where(ds.quality_mask_basic == 1, np.nan) / NORM_FACTOR
+            ds[band].where((ds.quality_mask_basic == 1) & is_this_band_valid, np.nan)
+            / NORM_FACTOR
         ).astype("float32")
 
         ds[f"{band}_strict"] = (
-            ds[band].where(ds.quality_mask_strict == 1, np.nan) / NORM_FACTOR
+            ds[band].where((ds.quality_mask_strict == 1) & is_this_band_valid, np.nan)
+            / NORM_FACTOR
         ).astype("float32")
+
+    gc.collect()
 
     # --- CLEANUP ---
     # Drop original raw bands and intermediate masks to save memory and bands that will not be used
     # We keep the new masks
-    # ds = ds.drop_vars(["B01", "B02", "B03", "B04", "B05", "B06", "B07", "B08", "B09", "B11", "B12", "B8A", "mask_phys_basic", "mask_phys_strict"], errors='ignore')
+    # ds = ds.drop_vars(all_b_bands, errors='ignore')
 
     # ds = ds.drop_vars([ "mask_phys_basic", "mask_phys_strict"])
 
@@ -266,7 +274,7 @@ def filter_static_vegetation_outliers(
     # 3. Calculate frequency of outliers per pixel over the whole time series
     clear_veg_days = clear_veg_pixels.sum(dim=time_dim)
     error_count = is_invalid.sum(dim=time_dim)
-    freq = xr.where(clear_veg_days > 0, error_count / clear_veg_days, 0)
+    freq = xr.where(clear_veg_days > 10, error_count / clear_veg_days, 0)
 
     # 4. Create the static mask (Broadcasted to 3D shape)
     # mask_static_bad is True for pixels failing the threshold check
