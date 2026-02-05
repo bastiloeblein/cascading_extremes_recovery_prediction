@@ -1,7 +1,6 @@
 import numpy as np
 import xarray as xr
 from scipy.ndimage import uniform_filter
-import spyndex
 from typing import Dict
 import gc
 
@@ -199,140 +198,140 @@ def normalize_s1_vars(ds, vv_max, vh_max, bands=["vv", "vh"]):
     return ds
 
 
-def aggregate_s1_causal_nearest(
-    ds,
-    s1_vars=["vv", "vh"],
-    s1_dim="time_sentinel_1_rtc",
-    s2_dim="time_sentinel_2_l2a",
-    tolerance_days=12,
-):
-    """
-    Aligns Sentinel-1 radar data to Sentinel-2 optical timestamps using a causal
-    (past-looking) forward-fill method.
-    """
-    s2_times = ds[s2_dim].values
-    s1_times = ds[s1_dim].values
+# def aggregate_s1_causal_nearest(
+#     ds,
+#     s1_vars=["vv", "vh"],
+#     s1_dim="time_sentinel_1_rtc",
+#     s2_dim="time_sentinel_2_l2a",
+#     tolerance_days=12,
+# ):
+#     """
+#     Aligns Sentinel-1 radar data to Sentinel-2 optical timestamps using a causal
+#     (past-looking) forward-fill method.
+#     """
+#     s2_times = ds[s2_dim].values
+#     s1_times = ds[s1_dim].values
 
-    print("NaNs before aggregation:", int(ds[s1_vars[0]].isnull().sum()))
+#     print("NaNs before aggregation:", int(ds[s1_vars[0]].isnull().sum()))
 
-    # 1. Reindex S1 to S2 time axis using Forward-Fill (ffill)
-    # Causal logic: It looks for the most recent S1 image in the PAST relative to S2.
-    # Tolerance: If the last S1 image is older than 'tolerance_days', it remains NaN.
-    ds_s1_res = (
-        ds[s1_vars]
-        .reindex(
-            {s1_dim: s2_times},
-            method="ffill",
-            tolerance=np.timedelta64(tolerance_days, "D"),
-        )
-        .rename({s1_dim: s2_dim})
-    )
+#     # 1. Reindex S1 to S2 time axis using Forward-Fill (ffill)
+#     # Causal logic: It looks for the most recent S1 image in the PAST relative to S2.
+#     # Tolerance: If the last S1 image is older than 'tolerance_days', it remains NaN.
+#     ds_s1_res = (
+#         ds[s1_vars]
+#         .reindex(
+#             {s1_dim: s2_times},
+#             method="ffill",
+#             tolerance=np.timedelta64(tolerance_days, "D"),
+#         )
+#         .rename({s1_dim: s2_dim})
+#     )
 
-    print("NaNs after aggregation: ", int(ds_s1_res[s1_vars[0]].isnull().sum()))
+#     print("NaNs after aggregation: ", int(ds_s1_res[s1_vars[0]].isnull().sum()))
 
-    # --- DATA USAGE ANALYSIS ---
+#     # --- DATA USAGE ANALYSIS ---
 
-    # Track which specific S1 timestamps were chosen for each S2 slot
-    s1_time_da = xr.DataArray(s1_times, coords={s1_dim: s1_times}, dims=[s1_dim])
-    chosen_s1_times = s1_time_da.reindex(
-        {s1_dim: s2_times},
-        method="ffill",
-        tolerance=np.timedelta64(tolerance_days, "D"),
-    ).values
+#     # Track which specific S1 timestamps were chosen for each S2 slot
+#     s1_time_da = xr.DataArray(s1_times, coords={s1_dim: s1_times}, dims=[s1_dim])
+#     chosen_s1_times = s1_time_da.reindex(
+#         {s1_dim: s2_times},
+#         method="ffill",
+#         tolerance=np.timedelta64(tolerance_days, "D"),
+#     ).values
 
-    # 1. Identify "Empty Bins": S2 dates where no S1 image was found within the tolerance
-    empty_bins_mask = np.isnat(chosen_s1_times)
-    empty_s2_dates = s2_times[empty_bins_mask]
+#     # 1. Identify "Empty Bins": S2 dates where no S1 image was found within the tolerance
+#     empty_bins_mask = np.isnat(chosen_s1_times)
+#     empty_s2_dates = s2_times[empty_bins_mask]
 
-    # 2. Identify "Duplicates": Instances where the same S1 image is assigned to multiple S2 dates
-    # (Happens if S2 frequency > S1 frequency)
-    is_duplicate = np.zeros(len(chosen_s1_times), dtype=bool)
-    for i in range(1, len(chosen_s1_times)):
-        if (
-            not np.isnat(chosen_s1_times[i])
-            and chosen_s1_times[i] == chosen_s1_times[i - 1]
-        ):
-            is_duplicate[i] = True
+#     # 2. Identify "Duplicates": Instances where the same S1 image is assigned to multiple S2 dates
+#     # (Happens if S2 frequency > S1 frequency)
+#     is_duplicate = np.zeros(len(chosen_s1_times), dtype=bool)
+#     for i in range(1, len(chosen_s1_times)):
+#         if (
+#             not np.isnat(chosen_s1_times[i])
+#             and chosen_s1_times[i] == chosen_s1_times[i - 1]
+#         ):
+#             is_duplicate[i] = True
 
-    duplicate_s2_dates = s2_times[is_duplicate]
+#     duplicate_s2_dates = s2_times[is_duplicate]
 
-    # --- OUTPUT STATISTICS ---
-    print("--- S1-S2 Causal Analysis ---")
-    print(f"Total S1 Timesteps: {len(s1_times)}")
-    print(f"Total S2 Timesteps: {len(s2_times)}")
-    print(
-        f"Empty Timesteps (No S1 within {tolerance_days} days): {len(empty_s2_dates)}"
-    )
-    if len(empty_s2_dates) > 0:
-        print(f"  First 5 empty dates: {empty_s2_dates[:5]}")
+#     # --- OUTPUT STATISTICS ---
+#     print("--- S1-S2 Causal Analysis ---")
+#     print(f"Total S1 Timesteps: {len(s1_times)}")
+#     print(f"Total S2 Timesteps: {len(s2_times)}")
+#     print(
+#         f"Empty Timesteps (No S1 within {tolerance_days} days): {len(empty_s2_dates)}"
+#     )
+#     if len(empty_s2_dates) > 0:
+#         print(f"  First 5 empty dates: {empty_s2_dates[:5]}")
 
-    print(f"Re-used S1 images (Duplicates): {len(duplicate_s2_dates)}")
-    if len(duplicate_s2_dates) > 0:
-        print(f"  Examples of S2 dates with duplicates: {duplicate_s2_dates[:5]}")
-    print("----------------------------")
+#     print(f"Re-used S1 images (Duplicates): {len(duplicate_s2_dates)}")
+#     if len(duplicate_s2_dates) > 0:
+#         print(f"  Examples of S2 dates with duplicates: {duplicate_s2_dates[:5]}")
+#     print("----------------------------")
 
-    # Add a quality mask indicating where S1 data is actually present
-    ds_s1_res["s1_quality_mask"] = ds_s1_res[s1_vars[0]].notnull().astype("uint8")
+#     # Add a quality mask indicating where S1 data is actually present
+#     ds_s1_res["s1_quality_mask"] = ds_s1_res[s1_vars[0]].notnull().astype("uint8")
 
-    # Create a mask with (dim = time_sentinel_2_l2a): 1 if there is at least one S1 observation present for this timestep and 0 if there isnt
-    ds["s1_any_data_available"] = (ds.s1_quality_mask.sum(dim=["x", "y"]) > 0).astype(
-        "uint8"
-    )
+#     # Create a mask with (dim = time_sentinel_2_l2a): 1 if there is at least one S1 observation present for this timestep and 0 if there isnt
+#     ds["s1_any_data_available"] = (ds.s1_quality_mask.sum(dim=["x", "y"]) > 0).astype(
+#         "uint8"
+#     )
 
-    # Drop the original S1 dimension to allow merging back into the S2-dimensioned dataset
-    s2_only = ds.drop_dims(s1_dim)
+#     # Drop the original S1 dimension to allow merging back into the S2-dimensioned dataset
+#     s2_only = ds.drop_dims(s1_dim)
 
-    return xr.merge([s2_only, ds_s1_res])
-
-
-def calculate_SAR_index(ds, index_name, bands_map=BAND_MAP_S1):
-    """Calculates a SAR index via spyndex and returns a raw float32 DataArray."""
-
-    # Map internal spyndex codes (e.g., 'VV', 'VH') to your dataset bands
-    params = {code: ds[band] for code, band in bands_map.items() if band in ds}
-
-    # Check if all required bands for this specific index are present
-    # spyndex.computeIndex returns a DataArray with an 'index' dimension
-    raw_da = spyndex.computeIndex(index=[index_name], params=params)
-
-    # .squeeze() removes the 'index' dimension, but we must ensure
-    # we don't accidentally squeeze out a valid time or spatial dimension
-    # if it only has a size of 1.
-    if "index" in raw_da.dims:
-        raw_da = raw_da.sel(index=index_name).drop_vars("index")
-
-    return raw_da.astype("float32")
+#     return xr.merge([s2_only, ds_s1_res])
 
 
-## This function maybe useful, but probably not
-def apply_sar_quality_mask(
-    ds,
-    threshold_vv=1.0,
-    threshold_vh=0.5,
-    veg_classes=[10, 20, 30, 40, 60, 90, 95, 100],
-):
-    """
-    Identifiziert Pixel, die jemals physikalisch unplausible SAR-Werte hatten
-    und setzt diese für alle Zeitschritte auf NaN (oder 0).
-    """
-    # 1. Wo liegen die Extremwerte? (Einzelne Ausreißer finden)
-    # Wir nehmen die Originalbänder vor dem Clipping
-    is_bad_vv = ds.vv > threshold_vv
-    is_bad_vh = ds.vh > threshold_vh
-    is_veg = ds.ESA_LC.isel(time_esa_worldcover=0).isin(veg_classes)
+# def calculate_SAR_index(ds, index_name, bands_map=BAND_MAP_S1):
+#     """Calculates a SAR index via spyndex and returns a raw float32 DataArray."""
 
-    # 2. 2D-Maske erstellen: Pixel, die IRGENDWANN mal schlecht waren
-    bad_pixel_mask = (is_bad_vv | is_bad_vh) & is_veg
+#     # Map internal spyndex codes (e.g., 'VV', 'VH') to your dataset bands
+#     params = {code: ds[band] for code, band in bands_map.items() if band in ds}
 
-    # 3. Das Dataset bereinigen
-    # Wir setzen diese Pixel im gesamten Cube auf NaN (oder 0, je nach Wunsch)
-    ds_clean = ds.copy()
-    ds_clean["vv"] = ds.vv.where(~bad_pixel_mask, np.nan)
-    ds_clean["vh"] = ds.vh.where(~bad_pixel_mask, np.nan)
+#     # Check if all required bands for this specific index are present
+#     # spyndex.computeIndex returns a DataArray with an 'index' dimension
+#     raw_da = spyndex.computeIndex(index=[index_name], params=params)
 
-    # Optional: Auch die bereits geclippten Bänder maskieren
-    if "vv_clipped" in ds:
-        ds_clean["vv_clipped"] = ds.vv_clipped.where(~bad_pixel_mask, np.nan)
-        ds_clean["vh_clipped"] = ds.vh_clipped.where(~bad_pixel_mask, np.nan)
+#     # .squeeze() removes the 'index' dimension, but we must ensure
+#     # we don't accidentally squeeze out a valid time or spatial dimension
+#     # if it only has a size of 1.
+#     if "index" in raw_da.dims:
+#         raw_da = raw_da.sel(index=index_name).drop_vars("index")
 
-    return ds_clean, bad_pixel_mask
+#     return raw_da.astype("float32")
+
+
+# ## This function maybe useful, but probably not
+# def apply_sar_quality_mask(
+#     ds,
+#     threshold_vv=1.0,
+#     threshold_vh=0.5,
+#     veg_classes=[10, 20, 30, 40, 60, 90, 95, 100],
+# ):
+#     """
+#     Identifiziert Pixel, die jemals physikalisch unplausible SAR-Werte hatten
+#     und setzt diese für alle Zeitschritte auf NaN (oder 0).
+#     """
+#     # 1. Wo liegen die Extremwerte? (Einzelne Ausreißer finden)
+#     # Wir nehmen die Originalbänder vor dem Clipping
+#     is_bad_vv = ds.vv > threshold_vv
+#     is_bad_vh = ds.vh > threshold_vh
+#     is_veg = ds.ESA_LC.isel(time_esa_worldcover=0).isin(veg_classes)
+
+#     # 2. 2D-Maske erstellen: Pixel, die IRGENDWANN mal schlecht waren
+#     bad_pixel_mask = (is_bad_vv | is_bad_vh) & is_veg
+
+#     # 3. Das Dataset bereinigen
+#     # Wir setzen diese Pixel im gesamten Cube auf NaN (oder 0, je nach Wunsch)
+#     ds_clean = ds.copy()
+#     ds_clean["vv"] = ds.vv.where(~bad_pixel_mask, np.nan)
+#     ds_clean["vh"] = ds.vh.where(~bad_pixel_mask, np.nan)
+
+#     # Optional: Auch die bereits geclippten Bänder maskieren
+#     if "vv_clipped" in ds:
+#         ds_clean["vv_clipped"] = ds.vv_clipped.where(~bad_pixel_mask, np.nan)
+#         ds_clean["vh_clipped"] = ds.vh_clipped.where(~bad_pixel_mask, np.nan)
+
+#     return ds_clean, bad_pixel_mask

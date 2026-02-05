@@ -28,39 +28,39 @@ NDVI_MAX = 1.0
 
 # S2 Bandnamen für spyndex
 BAND_MAP_S2: Dict[str, str] = {
-    "B": "B02",
-    "G": "B03",
-    "R": "B04",
-    "RE1": "B05",
-    "RE2": "B06",
-    "RE3": "B07",
-    "N": "B08",
-    "S1": "B11",
-    "S2": "B12",
+    "B": "B02_normalized",
+    "G": "B03_normalized",
+    "R": "B04_normalized",
+    "RE1": "B05_normalized",
+    "RE2": "B06_normalized",
+    "RE3": "B07_normalized",
+    "N": "B08_normalized",
+    "S1": "B11_normalized",
+    "S2": "B12_normalized",
 }
 
 BAND_MAP_S2_BASIC: Dict[str, str] = {
-    "B": "B02",
-    "G": "B03",
+    "B": "B02_basic",
+    "G": "B03_basic",
     "R": "B04_basic",
-    "RE1": "B05",
-    "RE2": "B06",
-    "RE3": "B07",
+    "RE1": "B05_basic",
+    "RE2": "B06_basic",
+    "RE3": "B07_basic",
     "N": "B08_basic",
-    "S1": "B11",
-    "S2": "B12",
+    "S1": "B11_basic",
+    "S2": "B12_basic",
 }
 
 BAND_MAP_S2_STRICT: Dict[str, str] = {
-    "B": "B02",
-    "G": "B03",
+    "B": "B02_strict",
+    "G": "B03_strict",
     "R": "B04_strict",
-    "RE1": "B05",
-    "RE2": "B06",
-    "RE3": "B07",
+    "RE1": "B05_strict",
+    "RE2": "B06_strict",
+    "RE3": "B07_strict",
     "N": "B08_strict",
-    "S1": "B11",
-    "S2": "B12",
+    "S1": "B11_strict",
+    "S2": "B12_strict",
 }
 
 # S1 Bandnamen (VH/VV)
@@ -159,21 +159,22 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
     gc.collect()
 
     # 4. Apply masks and normalize to [0, 1] range
-    # Values outside the mask become NaN; valid values are scaled
     for band in all_b_bands:
-        is_this_band_valid = (ds[band] > REFLECTANCE_MIN) & (
-            ds[band] <= REFLECTANCE_MAX
-        )
+        # is_this_band_valid = (ds[band] > REFLECTANCE_MIN) & (
+        #     ds[band] <= REFLECTANCE_MAX
+        # )
 
-        ds[f"{band}_basic"] = (
-            ds[band].where((ds.quality_mask_basic == 1) & is_this_band_valid, np.nan)
-            / NORM_FACTOR
-        ).astype("float32")
+        # num_invalid = (
+        #     (~is_this_band_valid & ds.quality_mask_basic & ds.is_veg).sum().values
+        # )
+        # total_pixels = (ds.quality_mask_basic & ds.is_veg).sum().values
+        # percent_affected = (num_invalid / total_pixels) * 100
 
-        ds[f"{band}_strict"] = (
-            ds[band].where((ds.quality_mask_strict == 1) & is_this_band_valid, np.nan)
-            / NORM_FACTOR
-        ).astype("float32")
+        # print(f"--- {band} ---")
+        # print(f"Invalid pixels: {num_invalid} / {total_pixels}")
+        # print(f"Affected: {percent_affected:.4f}%")
+
+        ds[f"{band}_normalized"] = (ds[band] / NORM_FACTOR).astype("float32")
 
     gc.collect()
 
@@ -187,21 +188,14 @@ def clean_and_normalize_bands(ds: xr.Dataset) -> xr.Dataset:
     return ds
 
 
-def calculate_s2_index(
-    ds: xr.Dataset, index_name: str, mask_type: str = None
-) -> xr.DataArray:
+def calculate_s2_index(ds: xr.Dataset, index_name: str) -> xr.DataArray:
     """
     Calculates spectral indices (e.g., NDVI) and verifies NaN consistency
     against input masks.
     """
 
     # 1. Select the correct band mapping based on prior cleaning steps
-    if mask_type == "basic":
-        bands_map = BAND_MAP_S2_BASIC
-    elif mask_type == "strict":
-        bands_map = BAND_MAP_S2_STRICT
-    else:
-        bands_map = BAND_MAP_S2
+    bands_map = BAND_MAP_S2
 
     # Build parameters for spyndex computation
     params = {code: ds[band] for code, band in bands_map.items() if band in ds}
@@ -220,94 +214,88 @@ def calculate_s2_index(
         )
 
     # 3. Compute Index
-    index_var = f"{index_name}_{mask_type}"
-    ds[index_var] = (
+    ds[index_name] = (
         spyndex.computeIndex(index=[index_name], params=params)
         .squeeze()
         .astype("float32")
     )
 
     # --- SANITY CHECK ---
-    if "NDVI" in index_var:
-        # Wir berechnen das tatsächliche Max/Min und vergleichen es
-        actual_max = ds[index_var].max().values
-        actual_min = ds[index_var].min().values
-
-        assert actual_max <= NDVI_MAX, f"NDVI too high: {actual_max}"
-        assert actual_min >= NDVI_MIN, f"NDVI too low: {actual_min}"
-
-    # The number of NaNs in the result must exactly match the NaNs in the input bands
-    if mask_type == "basic":
-        assert (
-            ds[index_var].isnull().sum().values
-            == (ds.quality_mask_basic == 0).sum().values
-        ), "Number of NANs mismatch"
-    if mask_type == "strict":
-        assert (
-            ds[index_var].isnull().sum().values
-            == (ds.quality_mask_strict == 0).sum().values
-        ), "Number of NANs mismatch"
-
-    # ds = ds.drop_vars([f"B04_{mask_type}", f"B08_{mask_type}"], errors="ignore")
+    if "NDVI" in index_name:
+        #  Check for outliers in valid pixels
+        validate_index_against_masks(ds, index_name)
 
     return ds
 
 
+def validate_index_against_masks(ds, index_var):
+    for m_type in ["basic", "strict"]:
+        mask_col = f"quality_mask_{m_type}"
+        # Prüfe nur die als valide (1) markierten Pixel
+        valid_data = ds[index_var].where(ds[mask_col] == 1)
+
+        v_max = float(valid_data.max())
+        v_min = float(valid_data.min())
+
+        if v_max > 1.001 or v_min < -1.001:
+            raise ValueError(
+                f"Out-of-range {index_var} in {mask_col}: [{v_min:.4f}, {v_max:.4f}]"
+            )
+    print(f"✅ {index_var} is valid within both masks.")
+
+
 def filter_static_vegetation_outliers(
-    ds, index_name, threshold_pct=0.75, time_dim="time_sentinel_2_l2a"
+    ds, index_name="NDVI", threshold_pct=0.75, time_dim="time_sentinel_2_l2a"
 ):
     """
     Identifies 'static bad pixels' that frequently show non-vegetation values
-    and masks them permanently across the time series.
+    and saves them in a permanent static mask.
+    The static mask can then be used to refine vegetation masks.
     """
     da_val = ds[index_name]
 
-    # 1. Define valid basis: Must be classified as vegetation AND have good cloud quality
-    mask_type = index_name.split("_")[-1]
-    quality_mask = f"quality_mask_{mask_type}"
+    # 1. Use a baseline quality
+    quality_mask = "quality_mask_strict"
     clear_veg_pixels = (ds.is_veg == 1) & (ds[quality_mask] == 1)
 
-    # 2. Identify outliers: NDVI values that are physically unlikely for vegetation
-    # We use < 0.0 (water/shadow) and > 0.95 (sensor artifacts)
+    # 2. Identify outliers (NDVI < 0 or > 0.95)
     is_invalid = ((da_val > 0.95) | (da_val < 0.0)) & clear_veg_pixels
 
-    # 3. Calculate frequency of outliers per pixel over the whole time series
+    # 3. Calculate frequency of errors
     clear_veg_days = clear_veg_pixels.sum(dim=time_dim)
     error_count = is_invalid.sum(dim=time_dim)
-    freq = xr.where(clear_veg_days > 10, error_count / clear_veg_days, 0)
 
-    # 4. Create the static mask (Broadcasted to 3D shape)
-    # mask_static_bad is True for pixels failing the threshold check
-    mask_static_bad = (freq > threshold_pct).broadcast_like(da_val)
+    # Freq: percentage of 'clear' days that showed impossible NDVI
+    freq = xr.where(clear_veg_days > 5, error_count / clear_veg_days, 0)
+
+    # 4. Create the Static Bad Mask (2D)
+    # True where the pixel is out of expected interval for more then 75%
+    static_bad_mask = freq > threshold_pct
+
+    # Create the named static mask: 1 = Keep, 0 = Static Outlier
     mask_name = f"{index_name}_valid_mask_static"
+    ds[mask_name] = (~static_bad_mask).astype("uint8")
 
-    # Save as uint8: 1 = Keep, 0 = Permanently Masked
-    ds[mask_name] = (~mask_static_bad).astype(
-        "uint8"
-    )  # combine this with is_veg masked -> set 0 if not veg
+    # --- ASSERTION LOGIC ---
+    # We check how many pixels in 'is_veg' are being "hit" by this new static mask
+    # valid_before: All pixels currently marked as vegetation
+    # pixels_to_remove: Pixels that are veg but now marked as static bad
+    valid_before = int(ds.is_veg.sum())
+    pixels_to_remove = int((ds.is_veg & static_bad_mask).sum())
 
-    # --- PRE-CALCULATION FOR ASSERT ---
-    # We want to know how many NEW NaNs we will create.
-    # These are pixels where the static mask is 0 (bad) AND the quality mask was 1 (clear).
-    # If quality_mask was already 0, it was already NaN, so it doesn't count as 'new'.
-    newly_masked_count = int(
-        (
-            (ds[mask_name].isel(time_sentinel_2_l2a=0) == 0) & (ds[quality_mask] == 1)
-        ).sum()
-    )
-    nans_before = int(da_val.isnull().sum())
+    valid_after = int((ds.is_veg & ds[mask_name]).sum())
 
-    # 5. Apply the mask: Set 'bad seeds' to NaN
-    ds[index_name] = ds[index_name].where(ds[mask_name] == 1, np.nan)
-
-    nans_after = int(ds[index_name].isnull().sum())
-
-    # --- ASSERTION ---
-    # The increase in NaNs must exactly match our calculated newly_masked_count
-    expected_nans = nans_before + newly_masked_count
+    # Check if the math adds up
     assert (
-        nans_after == expected_nans
-    ), f"NaN mismatch! Expected {expected_nans}, but found {nans_after}. Diff: {nans_after - expected_nans}"
+        valid_before - valid_after == pixels_to_remove
+    ), f"Assertion failed! Before: {valid_before}, After: {valid_after}, Expected Removal: {pixels_to_remove}"
+
+    # 5. Logging
+    num_static_bad = int(static_bad_mask.sum())
+    if num_static_bad > 0:
+        print(
+            f"📍 Created {mask_name}: {num_static_bad} pixels identified as permanent outliers."
+        )
 
     return ds
 
@@ -320,7 +308,7 @@ def integrate_veg_and_wrongly_classified_mask(
     and cleans up the temporary static mask.
     """
     mask_name = f"{index_name}_valid_mask_static"
-    static_mask_2d = ds[mask_name].isel(time_sentinel_2_l2a=0)
+    static_mask_2d = ds[mask_name]
 
     # Use bitwise multiplication to keep it uint8 and ensure correct broadcasting
     ds["is_veg"] = (ds["is_veg"] & static_mask_2d).astype("uint8")

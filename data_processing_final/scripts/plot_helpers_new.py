@@ -353,9 +353,7 @@ def plot_statistical_outliers(ds, index_name, time_index):
 
     # Right: The Outliers
     # Show the mask in bright red on a black background for maximum contrast
-    outlier_map = (
-        static_bad_pixels.isel(time_sentinel_2_l2a=0).astype(float).values.squeeze()
-    )
+    outlier_map = static_bad_pixels.astype(float).values.squeeze()
     ax2.imshow(outlier_map, cmap="Reds")
     ax2.set_title(f"Permanently Masked Pixels\n(Freq > {0.75*100}%)")
     ax2.axis("off")
