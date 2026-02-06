@@ -3,6 +3,7 @@ import xarray as xr
 from scipy.ndimage import uniform_filter
 from typing import Dict
 import gc
+import spyndex
 
 # S1 Bandnamen (VH/VV)
 BAND_MAP_S1: Dict[str, str] = {
@@ -198,6 +199,25 @@ def normalize_s1_vars(ds, vv_max, vh_max, bands=["vv", "vh"]):
     return ds
 
 
+def calculate_SAR_index(ds, index_name, bands_map=BAND_MAP_S1):
+    """Calculates a SAR index via spyndex and returns a raw float32 DataArray."""
+
+    # Map internal spyndex codes (e.g., 'VV', 'VH') to your dataset bands
+    params = {code: ds[band] for code, band in bands_map.items() if band in ds}
+
+    # Check if all required bands for this specific index are present
+    # spyndex.computeIndex returns a DataArray with an 'index' dimension
+    raw_da = spyndex.computeIndex(index=[index_name], params=params)
+
+    # .squeeze() removes the 'index' dimension, but we must ensure
+    # we don't accidentally squeeze out a valid time or spatial dimension
+    # if it only has a size of 1.
+    if "index" in raw_da.dims:
+        raw_da = raw_da.sel(index=index_name).drop_vars("index")
+
+    return raw_da.astype("float32")
+
+
 # def aggregate_s1_causal_nearest(
 #     ds,
 #     s1_vars=["vv", "vh"],
@@ -282,25 +302,6 @@ def normalize_s1_vars(ds, vv_max, vh_max, bands=["vv", "vh"]):
 #     s2_only = ds.drop_dims(s1_dim)
 
 #     return xr.merge([s2_only, ds_s1_res])
-
-
-# def calculate_SAR_index(ds, index_name, bands_map=BAND_MAP_S1):
-#     """Calculates a SAR index via spyndex and returns a raw float32 DataArray."""
-
-#     # Map internal spyndex codes (e.g., 'VV', 'VH') to your dataset bands
-#     params = {code: ds[band] for code, band in bands_map.items() if band in ds}
-
-#     # Check if all required bands for this specific index are present
-#     # spyndex.computeIndex returns a DataArray with an 'index' dimension
-#     raw_da = spyndex.computeIndex(index=[index_name], params=params)
-
-#     # .squeeze() removes the 'index' dimension, but we must ensure
-#     # we don't accidentally squeeze out a valid time or spatial dimension
-#     # if it only has a size of 1.
-#     if "index" in raw_da.dims:
-#         raw_da = raw_da.sel(index=index_name).drop_vars("index")
-
-#     return raw_da.astype("float32")
 
 
 # ## This function maybe useful, but probably not

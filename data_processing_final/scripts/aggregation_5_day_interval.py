@@ -8,10 +8,7 @@ import numpy as np
 def align_all_to_5d(ds, masking_type):
 
     # 1. Define which mask to use
-    if masking_type == "basic":
-        mask = ds.quality_mask_basic
-    elif masking_type == "strict":
-        mask = ds.quality_mask_strict
+    mask = ds[f"quality_mask_{masking_type}"]
 
     # 2. Define common date as base for resampling
     start_date = pd.to_datetime(ds.precip_end_date)
@@ -25,55 +22,113 @@ def align_all_to_5d(ds, masking_type):
     ]  # Exclude masks
     static_features = ds[["ESA_LC", "COP_DEM", "is_veg"]]
 
-    # 3. Apply masking: Set all values to NaN which have 0 in mask
-    assert (
-        ds[f"NDVI_{masking_type}"].where(mask == 0).notnull().sum().values == 0
-    ), "Masking failed: Non-NaN values found in clouded areas!"  # costly
-    ds[s2_vars] = ds[s2_vars].where(mask == 1, np.nan)
-
     # 2. Resampling S2 data (optical):
     ## Think about selecting the image with the lowest cloud cover within the bin!
     s2_res = (
         ds[s2_vars]
+        .astype("float32")
+        .where(mask == 1)
         .resample(time_sentinel_2_l2a="5D", label="right", origin=start_date)
         .median()
     )
 
+    assess_data_availability(mask, s2_res[s2_vars[0]])
+
     # 3. Resampling S1 data (radar):
     s1_res = (
         ds[s1_vars]
+        .astype("float32")
         .resample(time_sentinel_1_rtc="5D", label="right", origin=start_date)
         .median()
     )
     s1_res = s1_res.rename({"time_sentinel_1_rtc": "time_sentinel_2_l2a"})
 
+    # # Optional: Think about it: This forces S1 to have the exact same time points as S2 (if there are S1 observations before or after S2 period, they get lost)
+    s1_res = s1_res.reindex(time_sentinel_2_l2a=s2_res.time_sentinel_2_l2a, method=None)
+
+    # Check consistency of resampled timesteps for S1 and S2
+    assert len(s2_res.time_sentinel_2_l2a) == len(
+        s1_res.time_sentinel_2_l2a
+    ), f"Missmatch in number of timesteos! S2: {len(s2_res.time_sentinel_2_l2a)}, S1: {len(s1_res.time_sentinel_2_l2a)}"
+    assert s2_res.time_sentinel_2_l2a.equals(
+        s1_res.time_sentinel_2_l2a
+    ), "Timesteps of S1 and S2 do not match after resampling!"
+
+    print("✅ Timesteps perfectly aligned.")
+
     # 5. Get information on aggregation
     plot_full_acquisition_analysis(ds, masking_type="basic")
 
     # 6. Merge datasets
-    # Optional: Think about it: This forces S1 to have the exact same time points as S2 (if there are S1 observations before or after S2 period, they get lost)
-    s1_res = s1_res.reindex(time_sentinel_2_l2a=s2_res.time_sentinel_2_l2a, method=None)
     combined = xr.merge(
         [s2_res, s1_res, static_features]
     )  # Add static features (later on maybe think about broadcasting them to time_sentinel_2 as well)
 
-    # Create mask for S2 and S1
-    combined["s2_final_mask"] = (
-        combined[f"NDVI_{masking_type}"].notnull().astype("uint8")
-    )
+    # # Create mask for S2 and S1
+    valid_binary = combined["NDVI"].notnull()
+    combined[f"s2_final_mask_{masking_type}"] = valid_binary.astype("uint8")
     combined["s1_final_mask"] = combined["vh"].notnull().astype("uint8")
 
-    # Some assertions
-    assert combined.s2_final_mask.max() <= 1 and combined.s2_final_mask.min() >= 0
+    # # Some assertions
+    assert (
+        combined[f"s2_final_mask_{masking_type}"].max() <= 1
+        and combined[f"s2_final_mask_{masking_type}"].min() >= 0
+    )
     assert "time_sentinel_2_l2a" in combined.dims
     assert (
-        combined.s2_final_mask.shape[0] == combined.s1_final_mask.shape[0]
+        combined[f"s2_final_mask_{masking_type}"].shape[0]
+        == combined.s1_final_mask.shape[0]
     ), "Time dimension mismatch after merge!"
 
     return combined
 
 
+def assess_data_availability(mask, ds_after):
+    # 1. Erstelle ein statistisches Dataset (Lazy)
+    # Wir bündeln alle Berechnungen in ein Objekt
+    stats_ds = xr.Dataset(
+        {
+            "invalid_pre": (mask == 0).sum(),
+            "gaps_post": ds_after.isnull().sum(),
+            "permanent_gaps": (
+                ds_after.notnull().sum(dim="time_sentinel_2_l2a") == 0
+            ).sum(),
+        }
+    )
+
+    # 2. Ein einziger .compute() Aufruf triggert die gesamte Engine nur EINMAL
+    # Das spart massiv Zeit, da die Daten nur einmal gestreamt werden
+    computed_stats = stats_ds.compute()
+
+    # Werte extrahieren
+    invalid_pre = computed_stats.invalid_pre.item()
+    gaps_post = computed_stats.gaps_post.item()
+    permanent_gaps = computed_stats.permanent_gaps.item()
+
+    # Konstanten für die Berechnung
+    total_pixels_before = mask.size
+    total_pixels_after = ds_after.size
+    timesteps_before = len(mask.time_sentinel_2_l2a)
+    timesteps_after = len(ds_after.time_sentinel_2_l2a)
+
+    # Prozente berechnen
+    pct_invalid_pre = (invalid_pre / total_pixels_before) * 100
+    pct_gaps_post = (gaps_post / total_pixels_after) * 100
+    pct_permanent = (permanent_gaps / (mask.shape[1] * mask.shape[2])) * 100
+
+    print("--- Data Availability Report ---")
+    print(f"Timesteps: {timesteps_before} -> {timesteps_after}")
+    print(f"Pre-Resampling Invalidity: {pct_invalid_pre:.2f}%")
+    print(f"Post-Resampling Gaps:      {pct_gaps_post:.2f}%")
+    print(f"Permanently missing px:    {pct_permanent:.2f}%")
+
+    return pct_gaps_post
+
+
 def plot_full_acquisition_analysis(ds, masking_type="basic"):
+
+    mask = ds[f"quality_mask_{masking_type}"]
+
     # 1. Timestamps & Validity
     t1_raw = pd.to_datetime(ds.time_sentinel_1_rtc.values)
     t2_raw = pd.to_datetime(ds.time_sentinel_2_l2a.values)
@@ -81,7 +136,7 @@ def plot_full_acquisition_analysis(ds, masking_type="basic"):
 
     # Check validity (pixel counts)
     s1_valid_counts = ds["vh"].count(dim=["x", "y"]).values
-    s2_valid_counts = ds[f"NDVI_{masking_type}"].count(dim=["x", "y"]).values
+    s2_valid_counts = ds["NDVI"].where(mask == 1).count(dim=["x", "y"]).values
 
     # 2. Dynamic Binning
     all_times = np.concatenate([t1_raw, t2_raw])
