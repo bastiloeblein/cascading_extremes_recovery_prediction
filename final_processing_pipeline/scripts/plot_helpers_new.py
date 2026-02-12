@@ -369,3 +369,88 @@ def plot_statistical_outliers(ds, time_index):
     plt.show()
 
     print(f"Total static outliers found: {int(static_bad_pixels.sum())} pixels")
+
+
+def plot_nan_distribution(ds_old, ds_new, var_name, cutoff_date):
+    """
+    Plottet den Prozentsatz der NaNs pro Zeitschritt für eine Variable.
+    """
+    time_dim = "time_sentinel_2_l2a"
+
+    # 1. Berechne NaN-Prozent pro Timestep (Mittelwert über x und y)
+    nan_perc_old = (ds_old[var_name].isnull().mean(dim=["x", "y"]) * 100).compute()
+    nan_perc_new = (ds_new[var_name].isnull().mean(dim=["x", "y"]) * 100).compute()
+
+    time_axis = ds_old[time_dim].values
+
+    plt.figure(figsize=(15, 5))
+
+    # Flächen füllen für bessere Sichtbarkeit
+    plt.fill_between(
+        time_axis, nan_perc_old, label="Original NaNs", color="red", alpha=0.3
+    )
+    plt.fill_between(
+        time_axis,
+        nan_perc_new,
+        label="Post-Interpolation NaNs",
+        color="green",
+        alpha=0.5,
+    )
+
+    # Vertikale Linie für das Event
+    plt.axvline(
+        x=cutoff_date,
+        color="black",
+        linestyle="--",
+        linewidth=2,
+        label="Precip End Date (Event)",
+    )
+
+    # Styling
+    plt.title(f"NaN Distribution over Time for {var_name}", fontsize=14)
+    plt.ylabel("NaNs per Timestep (%)")
+    plt.xlabel("Date")
+    plt.ylim(0, 105)
+    plt.legend()
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_spatial_nan_frequency(ds, var_name, cutoff_date):
+    """
+    Visualisiert, wie oft jeder Pixel im Context-Zeitraum NaN ist.
+    """
+    time_dim = "time_sentinel_2_l2a"
+
+    # 1. Context isolieren
+    context = ds.sel({time_dim: slice(None, cutoff_date)})
+
+    # 2. Berechne die relative Häufigkeit von NaNs pro Pixel (0-100%)
+    # isnull() gibt 1 für NaN, 0 für Daten. mean über die Zeit gibt die Rate.
+    nan_freq = (context[var_name].isnull().mean(dim=time_dim) * 100).compute()
+
+    # 3. Plotten
+    plt.figure(figsize=(10, 8))
+    im = plt.imshow(
+        nan_freq, cmap="RdYlGn_r", vmin=0, vmax=100
+    )  # Rot = Häufig NaN, Grün = Fast immer Daten
+
+    cbar = plt.colorbar(im)
+    cbar.set_label("Frequency of NaNs (%)", fontsize=12)
+
+    plt.title(f"Spatial NaN Distribution in Context: {var_name}", fontsize=14)
+    plt.xlabel("x-coordinate (pixel)")
+    plt.ylabel("y-coordinate (pixel)")
+
+    # Zeige Statistik im Plot
+    avg_nan = float(nan_freq.mean())
+    plt.annotate(
+        f"Avg. NaN rate: {avg_nan:.1f}%",
+        xy=(0.05, 0.95),
+        xycoords="axes fraction",
+        color="white",
+        bbox=dict(boxstyle="round", fc="black", alpha=0.6),
+    )
+
+    plt.show()

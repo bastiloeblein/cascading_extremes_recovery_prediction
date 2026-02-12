@@ -80,10 +80,10 @@ def align_all_to_5d(ds, masking_type):
     )
 
     # Merge S1 stats and THEN reindex to match S2 time exactly
-    # Optional: Think about it: This forces S1 to have the exact same time points as S2 (if there are S1 observations before or after S2 period, they get lost)
     s1_combined_stats = xr.merge(
         [s1_res, s1_res_count, s1_res_min, s1_res_max, s1_res_std]
     )
+    # Optional: Think about it: This forces S1 to have the exact same time points as S2 (if there are S1 observations before or after S2 period, they get lost)
     s1_aligned = s1_combined_stats.reindex(
         time_sentinel_2_l2a=s2_res.time_sentinel_2_l2a, method=None
     )
