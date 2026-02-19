@@ -56,6 +56,7 @@ def subset_era5_spatial(
         )
 
         # 6. Optional Plotting Check
+        m = None
         if plot_check:
             # Extract coordinates of the centers of the ERA5 pixels
             era5_lats = era5_subset.latitude.values
@@ -90,7 +91,7 @@ def subset_era5_spatial(
 
             display(m)
 
-        return era5_subset
+        return era5_subset, m
 
     except KeyError as e:
         print(f"Error: Missing required attribute or coordinate: {e}")
@@ -103,36 +104,34 @@ def subset_era5_spatial(
 def subset_era5_time(
     era5_cube: xr.Dataset, ds_target: xr.Dataset, time_dim: str = "time_sentinel_2_l2a"
 ) -> Optional[xr.Dataset]:
-    """
-    Temporally subsets the ERA5 cube (pei_cube, t2_cube, etc.) to match the
-    time range of the target dataset (ds_train), plus a 5-day buffer at the start.
-
-    Parameters:
-        era5_cube (xr.Dataset): The source ERA5 dataset (daily resolution).
-        ds_target (xr.Dataset): The target S2 dataset defining the time bounds (ds_train).
-        time_dim (str): The name of the time dimension in ds_target.
-
-    Returns:
-        xr.Dataset: The time-subsetted ERA5 dataset, or None if the time dimension is missing.
-    """
-
     if time_dim not in ds_target.coords:
         print(f"Error: Time dimension '{time_dim}' not found in target dataset.")
         return None
 
-    # Get the start and end dates of the target S2 period
-    s2_start_time = ds_target[time_dim].min().astype("datetime64[D]")
-    s2_end_time = ds_target[time_dim].max().astype("datetime64[D]")
+    # 1. Define target period
+    s2_start = ds_target[time_dim].min().values.astype("datetime64[D]")
+    s2_end = ds_target[time_dim].max().values.astype("datetime64[D]")
 
-    # Define the start bound: 5 days before the first S2 observation
-    start_period = s2_start_time - np.timedelta64(5, "D")
+    start_period = s2_start - np.timedelta64(5, "D")
+    end_period = s2_end
 
-    # Define the end bound: The last S2 observation date
-    end_period = s2_end_time
+    # 2. Created expected timeline (daily)
+    target_time_range = np.arange(
+        start_period, end_period + np.timedelta64(1, "D"), np.timedelta64(1, "D")
+    )
 
-    # Subset the ERA5 cube using the derived time slices
     try:
-        era5_subset = era5_cube.sel(Ti=slice(start_period, end_period))
+        # 3. Use reindex to match target dimension
+        era5_subset = era5_cube.reindex(Ti=target_time_range, method=None)
+
+        # 3.1 Set chunks
+        era5_subset = era5_subset.chunk({"Ti": -1})
+
+        # 4. Sanity check
+        if len(era5_subset.Ti) != len(target_time_range):
+            raise ValueError(
+                f"Subset length mismatch. Expected {len(target_time_range)}, got {len(era5_subset.Ti)}"
+            )
 
         assert era5_subset.Ti[0] == ds_target.time_sentinel_2_l2a[0] - np.timedelta64(
             5, "D"
@@ -141,7 +140,9 @@ def subset_era5_time(
 
         return era5_subset
     except Exception as e:
-        print(f"Error during temporal subsetting: {e}")
+        print(
+            f"Error during temporal subsetting for {era5_cube} and {ds_target.attrs.get('cube_id')}: {e}"
+        )
         return None
 
 
@@ -154,7 +155,8 @@ def aggregate_era5_metrics_new(
 ) -> Optional[xr.Dataset]:
 
     # Get start date as base for the binning
-    start_date = pd.to_datetime(ds_target[target_time_dim].min().values)
+    # start_date = pd.to_datetime(ds_target[target_time_dim].min().values)
+    start_date = pd.to_datetime(ds_target.precip_end_date)
 
     # 1. ERA5 resampled on the same grid as our target dimension
     resampler = era5_data[era5_var_names].resample(

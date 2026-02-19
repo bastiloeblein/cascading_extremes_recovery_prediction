@@ -81,7 +81,9 @@ def get_s2_quality_masks(ds: xr.Dataset) -> xr.Dataset:
     ), f"Basic Mask contains non-binary values: {unique_vals}!"
 
     # 2. Hierarchy invariant: Strict mask must be a subset of basic mask
-    if int(ds["mask_phys_strict"].sum()) > int(ds["mask_phys_basic"].sum()):
+    if int(ds["mask_phys_strict"].sum().compute().item()) >= int(
+        ds["mask_phys_basic"].sum().compute().item()
+    ):
         raise ValueError(
             "Logic Error: Strict mask has more valid pixels than basic mask!"
         )
@@ -144,10 +146,10 @@ def apply_masking(
 
     # --- 2. APPLY MASK ---
     # Load the specific mask (e.g., mask_phys_strict)
-    mask = ds[f"mask_phys_{masking_type}"]
+    mask = ds[f"mask_phys_{masking_type}"].compute()
 
     # Count how many data points are marked for removal (mask value 0)
-    total_mask_zeros = int((mask == 0).sum().values)
+    total_mask_zeros = int((mask == 0).sum().compute().item())
 
     # Identify all S2-specific data variables (those sharing the S2 time dimension)
     # Excludes existing mask layers
@@ -169,7 +171,7 @@ def apply_masking(
         ), f"Spatial Masking Error: Some pixels in {var} that should be masked (mask=0) still contain numerical values!"
 
         # Count total NaNs after operation
-        current_nans = int(ds_masked[var].isnull().sum().values)
+        current_nans = int(ds_masked[var].isnull().sum().compute().item())
 
         # Logic: Current NaNs must be at least the number of zeros in the mask
         assert (

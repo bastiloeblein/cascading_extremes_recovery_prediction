@@ -311,8 +311,7 @@ def plot_landcover(
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
 
     # 4. Plotten der LC-Karte
-    im = ax.imshow(lc_snapshot.values, cmap=cmap, norm=norm, interpolation="nearest")
-    fig.colorbar(im, ax=ax, label="LC Code")
+    ax.imshow(lc_snapshot.values, cmap=cmap, norm=norm, interpolation="nearest")
 
     # 5. Legende erstellen (Patch-Objekte verwenden, um die Farben zuzuordnen)
     handles = [plt.Rectangle((0, 0), 1, 1, fc=cmap(norm(code))) for code in LC_CLASSES]
@@ -332,6 +331,7 @@ def plot_landcover(
     ax.set_ylabel("Y-Coordinate Index")
     ax.axis("off")  # Deaktiviere Achsen-Ticks für bessere Visualisierung
 
+    plt.tight_layout()
     plt.show()
 
 

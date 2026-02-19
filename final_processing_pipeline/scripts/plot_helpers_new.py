@@ -79,11 +79,11 @@ def plot_acquisition_timelines(ds):
     plt.show()
 
 
-def plot_acquisition_timelines_filtered(ds, precip_end_date):
+def plot_acquisition_timelines_filtered(ds, precip_end_date, offset=6, show=True):
     # 1. Setup Dates
     ref_date = pd.to_datetime(precip_end_date)
-    start_obs = ref_date - pd.DateOffset(months=6)
-    end_obs = ref_date + pd.DateOffset(months=6)
+    start_obs = ref_date - pd.DateOffset(months=offset)
+    end_obs = ref_date + pd.DateOffset(months=offset)
 
     # 2. Extract and Filter Timestamps
     t1_all = pd.to_datetime(ds.time_sentinel_1_rtc.values)
@@ -186,7 +186,10 @@ def plot_acquisition_timelines_filtered(ds, precip_end_date):
     )
 
     plt.tight_layout()
-    plt.show()
+    if show:
+        plt.show()
+
+    return fig
 
 
 def plot_rgb(
@@ -322,7 +325,7 @@ def plot_rgb(
     return None
 
 
-def plot_statistical_outliers(ds, time_index):
+def plot_statistical_outliers(ds, time_index, show=True):
     """
     Plots RGB and highlights only the pixels that are permanently
     masked due to frequent outliers.
@@ -366,9 +369,12 @@ def plot_statistical_outliers(ds, time_index):
     ax2.set_title(f"Permanently Masked Pixels\n(Freq > {0.75*100}%)")
     ax2.axis("off")
 
-    plt.show()
+    if show:
+        plt.show()
 
     print(f"Total static outliers found: {int(static_bad_pixels.sum())} pixels")
+
+    return fig
 
 
 def plot_nan_distribution(ds_old, ds_new, var_name, cutoff_date):

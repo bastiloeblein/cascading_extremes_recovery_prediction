@@ -5,7 +5,10 @@ import pandas as pd
 import numpy as np
 
 
-def align_all_to_5d(ds, masking_type):
+def align_all_to_5d(ds, masking_type, show=True):
+
+    # Enforce same chunking for all vars
+    ds = ds.unify_chunks()
 
     # 1. Define which mask to use
     mask = ds[f"mask_phys_{masking_type}"]
@@ -101,7 +104,7 @@ def align_all_to_5d(ds, masking_type):
     print("✅ Timesteps perfectly aligned.")
 
     # 5. Get information on aggregation
-    plot_full_acquisition_analysis(ds)
+    fig = plot_full_acquisition_analysis(ds, show)
 
     # 6. Merge datasets
     combined = xr.merge(
@@ -132,7 +135,7 @@ def align_all_to_5d(ds, masking_type):
         == combined.s1_final_mask.shape[0]
     ), "Time dimension mismatch after merge!"
 
-    return combined
+    return combined, fig
 
 
 def assess_data_availability(ds_before, ds_after, sentinel):
@@ -171,7 +174,7 @@ def assess_data_availability(ds_before, ds_after, sentinel):
     pct_gaps_post = (gaps_post / total_pixels_after) * 100
     pct_permanent = (permanent_gaps / (ds_after.shape[1] * ds_after.shape[2])) * 100
 
-    print("--- Data Availability Report ---")
+    print(f"--- Data Availability Report: {sentinel.upper()}  ---")
     print(f"Timesteps: {timesteps_before} -> {timesteps_after}")
     print(f"Pre-Resampling Invalidity: {pct_invalid_pre:.2f}%")
     print(f"Post-Resampling Gaps:      {pct_gaps_post:.2f}%")
@@ -180,7 +183,7 @@ def assess_data_availability(ds_before, ds_after, sentinel):
     return pct_gaps_post
 
 
-def plot_full_acquisition_analysis(ds):
+def plot_full_acquisition_analysis(ds, show=True):
 
     # 1. Timestamps & Validity
     t1_raw = pd.to_datetime(ds.time_sentinel_1_rtc.values)
@@ -326,4 +329,8 @@ def plot_full_acquisition_analysis(ds):
     )
 
     plt.tight_layout()
-    plt.show()
+
+    if show:
+        plt.show()
+
+    return fig
