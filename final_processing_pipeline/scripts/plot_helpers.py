@@ -2,225 +2,13 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import ipywidgets as widgets
-from IPython.display import display
-from typing import Tuple, Optional, Union, Dict, Any
-import pandas as pd
+from typing import Tuple, Optional, Dict, Any
 import folium
 from pyproj import CRS, Transformer
 
 
 ## ----------------------------------------------------------------------
-## II. Statische RGB-Funktion (kann einzeln aufgerufen werden)
-## ----------------------------------------------------------------------
-
-
-def plot_rgb(
-    ds: xr.Dataset,
-    timestep: int,
-    time_dim: str = "time_sentinel_2_l2a",
-    bands: Tuple[str, str, str] = ("B04", "B03", "B02"),
-    stretch_pct: Tuple[int, int] = (2, 98),
-    figsize: Tuple[int, int] = (10, 6),
-    cloud_comp: bool = False,
-    title_prefix: Optional[str] = "Timestep",
-) -> Union[None, str]:
-    """
-    Plots a static true-color (RGB) composite for a specific timestep
-    from a Sentinel-2 xarray.Dataset. Optionally plots a cloud mask comparison.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Must have a time coordinate `time_dim` and DataArrays for the three bands.
-    timestep : int
-        The time index to plot (must be valid for ds[time_dim]).
-    time_dim : str
-        Name of the time dimension (default 'time_sentinel_2_l2a').
-    bands : tuple of str
-        The (red, green, blue) band names in ds (default ('B04','B03','B02')).
-    stretch_pct : tuple of int
-        Percentiles for contrast stretch (default 2nd to 98th).
-    figsize : tuple
-        Matplotlib figure size.
-    cloud_comp : bool
-        If True, plots the RGB image and the cloud mask comparison side-by-side.
-    title_prefix : str or None
-        Prefix for the figure title (used by interactive function).
-
-    Returns
-    -------
-    None or str
-        None on success, or an error message string if the timestep is invalid.
-    """
-
-    # Helper function to percentile‐stretch one (y,x) slice
-    def stretch_arr(band):
-        arr = band.compute().astype("float32")
-        p2, p98 = np.percentile(arr, stretch_pct)
-        return np.clip((arr - p2) / (p98 - p2), 0, 1)
-
-    # 1. Input Validation
-    if not 0 <= timestep < len(ds.coords[time_dim]):
-        return f"Timeindex {timestep} out of range for dimension '{time_dim}' (size {len(ds.coords[time_dim])})."
-
-    # 2. Subset data for the given timestep
-    subset = ds.isel({time_dim: timestep})
-    time_value_raw = subset[time_dim].item()
-
-    time_formatted = pd.to_datetime(time_value_raw).strftime("%Y-%m-%d")
-
-    try:
-        r, g, b = subset[bands[0]], subset[bands[1]], subset[bands[2]]
-    except KeyError as e:
-        return f"One or more bands not found in dataset: {e}"
-
-    # 3. Create RGB array (stretched)
-    rgb = np.dstack(
-        [stretch_arr(r).values, stretch_arr(g).values, stretch_arr(b).values]
-    )
-
-    # 4. Plotting Logic
-
-    if cloud_comp:
-        # --- Cloud Comparison Logic ---
-        try:
-            scl = subset["SCL"]
-            cloud_mask = subset["cloud_mask"]
-        except KeyError as e:
-            return f"Required variable for cloud comparison missing: {e}. Set cloud_comp=False or check dataset."
-
-        # Binary masks
-        is_cloud_scl = scl.isin([3, 8, 9, 10])  # cloud classes SCL
-        is_external_cloud = cloud_mask.isin([1, 2, 3])  # cloud classes cloud_mask
-
-        # Calculate difference and agreement masks for the overlay
-        scl_only_mask = (
-            (is_cloud_scl & ~is_external_cloud).astype(float).values.squeeze()
-        )
-        external_only_mask = (
-            (is_external_cloud & ~is_cloud_scl).astype(float).values.squeeze()
-        )
-        agreement_mask = (
-            (is_external_cloud & is_cloud_scl).astype(float).values.squeeze()
-        )
-
-        # Create the RGB overlay (Red=SCL Only, Green=External Only, Blue=Agreement)
-        overlay = np.dstack(
-            [
-                scl_only_mask,
-                external_only_mask,
-                agreement_mask,
-            ]
-        )
-
-        # Plotting side by side (2 plots)
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, constrained_layout=True)
-
-        # Left Plot: RGB ONLY
-        ax1.imshow(rgb)
-        ax1.set_title("True Color (RGB) Image", fontsize=12)
-        ax1.axis("off")
-
-        # Right Plot: RGB + Mask Comparison Overlay
-        ax2.imshow(rgb)
-        ax2.imshow(overlay, alpha=0.5)
-
-        ax2.set_title(
-            "Mask Comparison\n" "Red: SCL Only | Green: External Only | Blue: Both",
-            fontsize=12,
-        )
-        ax2.axis("off")
-
-        fig.suptitle(f"{title_prefix}: {time_formatted}", fontsize=14, y=1.02)
-
-    else:
-        # Plotting RGB ONLY (1 plot)
-        fig, ax1 = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
-
-        ax1.imshow(rgb)
-        ax1.set_title(
-            f"True Color (RGB) Image\n{title_prefix}: {time_formatted}", fontsize=14
-        )
-        ax1.axis("off")
-
-    plt.show()
-    return None
-
-
-## ----------------------------------------------------------------------
-## III. Interaktive RGB-Funktion (nutzt plot_rgb intern)
-## ----------------------------------------------------------------------
-
-
-def interactive_s2_rgb(
-    ds: xr.Dataset,
-    time_dim: str = "time_sentinel_2_l2a",
-    bands: Tuple[str, str, str] = ("B04", "B03", "B02"),
-    stretch_pct: Tuple[int, int] = (2, 98),
-    figsize: Tuple[int, int] = (14, 6),
-    slider_width: str = "900px",
-    cloud_comp: bool = False,
-):
-    """
-    Builds an interactive slider to browse true-color (RGB) composites
-    from a Sentinel-2 xarray.Dataset, with an optional cloud mask comparison.
-
-    This function calls plot_rgb for the actual plotting.
-
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Must have a time coordinate `time_dim` and DataArrays for the three bands.
-    time_dim : str
-        Name of the time dimension (default 'time_sentinel_2_l2a').
-    bands : tuple of str
-        The (red, green, blue) band names in ds.
-    stretch_pct : tuple of int
-        Percentiles for contrast stretch (default 2nd to 98th).
-    figsize : tuple
-        Matplotlib figure size.
-    slider_width : str
-        CSS width for the slider widget.
-    cloud_comp : bool
-        If True, plots the RGB image and the cloud mask comparison side-by-side.
-        If False (default), plots only the RGB image.
-    """
-    # Grab times and build slider labels
-    times = list(ds[time_dim].values)
-    # The slider needs the time value, but the index (i) for the subsetting logic
-    labels = [
-        (f"{i}: {np.datetime_as_string(t, unit='D')}", i) for i, t in enumerate(times)
-    ]
-
-    slider = widgets.SelectionSlider(
-        options=labels, description="Timestep Index", layout={"width": slider_width}
-    )
-
-    @widgets.interact(i=slider)
-    def _plot_rgb_interactive(i: int):
-        # The interactive function now just passes the index (i) to the static function
-        # The slider label (text) is now generated dynamically by the static function
-        result = plot_rgb(
-            ds=ds,
-            timestep=i,
-            time_dim=time_dim,
-            bands=bands,
-            stretch_pct=stretch_pct,
-            figsize=figsize,
-            cloud_comp=cloud_comp,
-            # Pass the slider label to be used as a title prefix
-            title_prefix=f"Index {i}: {np.datetime_as_string(times[i], unit='D')}",
-        )
-        if isinstance(result, str):
-            print(f"Plotting Error: {result}")
-
-    # The function returns the display object (the interactive widget)
-    return display(_plot_rgb_interactive)
-
-
-## ----------------------------------------------------------------------
-## IV. Landcover Plot Funktion
+## I. Landcover Plot Funktion
 ## ----------------------------------------------------------------------
 
 
@@ -263,6 +51,7 @@ def plot_landcover(
     ds: xr.Dataset,
     lc_var: str = "ESA_LC",
     time_dim_lc: str = "time_esa_worldcover",
+    ax: Optional[plt.Axes] = None,
     figsize: Tuple[int, int] = (10, 8),
 ) -> None:
     """
@@ -272,48 +61,47 @@ def plot_landcover(
     Parameters
     ----------
     ds : xarray.Dataset
-        Das Dataset, das die LC-Variable enthält.
+        The dataset containing the LC variable.
     lc_var : str
-        Name der Landcover-Variablen (default 'ESA_LC').
+        Name of the landcover variable (default 'ESA_LC').
     time_dim_lc : str
-        Name der Zeitdimension für die LC-Variable (default 'time_esa_worldcover').
+        Name of the time dimension for the LC variable (default 'time_esa_worldcover').
+    ax : matplotlib.axes.Axes, optional
+        Existing axes to plot on. If None, a new figure is created.
     figsize : tuple
-        Matplotlib figure size.
+        Matplotlib figure size (only used if ax is None).
     """
 
-    # 1. Datenvalidierung und Subset
+    # 1. Data Validation and Subsetting
     if lc_var not in ds:
         print(f"Error: Landcover variable '{lc_var}' not found in the dataset.")
         return
 
-    # Da LC statisch ist, wähle den ersten Zeitschritt
+    # Select the first timestep as LC is static
     try:
         lc_snapshot = ds[lc_var].isel({time_dim_lc: 0}).compute()
-    except KeyError:
-        # Fallback, falls die Dimension fehlt (z.B. wenn LC bereits 2D ist)
+    except (KeyError, ValueError):
+        # Fallback if dimension is missing or already 2D
         lc_snapshot = ds[lc_var].compute()
 
     # 2. Plotting Setup
-    fig, ax = plt.subplots(1, 1, figsize=figsize)
+    standalone = False
+    if ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=figsize)
+        standalone = True
 
-    # 3. Erstellung von Colormap und Normalisierung
+    # 3. Create Colormap and Normalization
     cmap = mcolors.ListedColormap(LC_COLORS)
-
-    # Erstelle Grenzen für die diskreten LC Codes
-    # (z.B. für Code 10: Grenzen 5 und 15; für Code 20: Grenzen 15 und 25)
     bounds = np.array(LC_CLASSES)
-    bounds = np.insert(bounds, 0, bounds[0] - 5)  # Füge den ersten Rand hinzu
+    bounds = np.insert(bounds, 0, bounds[0] - 5)
     bounds = bounds[:-1] + np.diff(bounds) / 2
-
-    # Füge den letzten Rand hinzu
     bounds = np.append(bounds, bounds[-1] + 10)
-
     norm = mcolors.BoundaryNorm(bounds, cmap.N)
 
-    # 4. Plotten der LC-Karte
+    # 4. Plot Landcover Map
     ax.imshow(lc_snapshot.values, cmap=cmap, norm=norm, interpolation="nearest")
 
-    # 5. Legende erstellen (Patch-Objekte verwenden, um die Farben zuzuordnen)
+    # 5. Create Legend (Using Patch objects to map colors)
     handles = [plt.Rectangle((0, 0), 1, 1, fc=cmap(norm(code))) for code in LC_CLASSES]
 
     ax.legend(
@@ -325,14 +113,13 @@ def plot_landcover(
         fontsize=10,
     )
 
-    # 6. Formatierung
-    ax.set_title(f"Landcover Map (LC Code: {lc_var})", fontsize=14)
-    ax.set_xlabel("X-Coordinate Index")
-    ax.set_ylabel("Y-Coordinate Index")
-    ax.axis("off")  # Deaktiviere Achsen-Ticks für bessere Visualisierung
+    # 6. Formatting
+    ax.set_title(f"Landcover Map ({lc_var})", fontsize=14)
+    ax.axis("off")  # Disable axis ticks for better visualization
 
-    plt.tight_layout()
-    plt.show()
+    if standalone:
+        plt.tight_layout()
+        plt.show()
 
 
 ## ----------------------------------------------------------------------

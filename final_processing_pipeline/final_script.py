@@ -34,7 +34,6 @@ from scripts.era_5_processing import (
     subset_era5_spatial,
     subset_era5_time,
     aggregate_era5_metrics_new,
-    check_time_alignment,
 )  # , create_uniform_era5_features, verify_era5_alignment
 from scripts.cube_processing import add_event_metadata
 from scripts.aggregation_5_day_interval import align_all_to_5d
@@ -56,7 +55,7 @@ warnings.filterwarnings("ignore", category=xr.SerializationWarning)
 
 
 # --- 2. HTML REPORT FUNCTION ---
-def create_html_report(info_dir, cube_id, report_sequence):
+def create_html_report(info_dir, cube_id, report_sequence, filename="processing.html"):
     html_start = f"""
     <!DOCTYPE html>
     <html>
@@ -91,7 +90,8 @@ def create_html_report(info_dir, cube_id, report_sequence):
             # Fügt den IFrame direkt ein
             content += f'<div class="map-container">{value}</div>'
 
-    with open(os.path.join(info_dir, "index.html"), "w", encoding="utf-8") as f:
+    report_path = os.path.join(info_dir, filename)
+    with open(report_path, "w", encoding="utf-8") as f:
         f.write(html_start + content + html_end)
 
 
@@ -121,21 +121,52 @@ def process_era5(cubes, era5_cubes, output_dir):
 
             # 3. Aggregation to target temporal resolution
             vars_list = list(tmp.data_vars)
-            tmp = aggregate_era5_metrics_new(tmp, ds_target, vars_list)
+            for v in vars_list:
+                if v.startswith("tp_"):
+                    # Convert from meter to milimeter
+                    tmp[v] = tmp[v] * 1000
+                    tmp[v].attrs["units"] = "mm"
+            # tmp = aggregate_era5_metrics_new(tmp, ds_target, vars_list)
 
-            # 3.1 Sanity check
-            assert len(ds_target.time_sentinel_2_l2a) == len(
-                tmp.time_sentinel_2_l2a
-            ), f"Zeit-Längen-Mismatch! S2: {len(ds_target.time_sentinel_2_l2a)}, ERA5: {len(tmp.time_sentinel_2_l2a)}"
-            assert ds_target.time_sentinel_2_l2a.equals(
-                tmp.time_sentinel_2_l2a
-            ), f"Zeit-Koordinaten-Mismatch in Cube {key}!"
+            # # 3.1 Sanity check
+            # assert len(ds_target.time_sentinel_2_l2a) == len(
+            #     tmp.time_sentinel_2_l2a
+            # ), f"Zeit-Längen-Mismatch! S2: {len(ds_target.time_sentinel_2_l2a)}, ERA5: {len(tmp.time_sentinel_2_l2a)}"
+            # assert ds_target.time_sentinel_2_l2a.equals(
+            #     tmp.time_sentinel_2_l2a
+            # ), f"Zeit-Koordinaten-Mismatch in Cube {key}!"
 
-            check_time_alignment(ds_target, tmp, "time_sentinel_2_l2a")
+            # check_time_alignment(ds_target, tmp, "time_sentinel_2_l2a")
 
             # 4. Reduce dimensions to 1 (only time_sentinel_2_l2a)
             tmp = tmp.squeeze(dim=["latitude", "longitude"], drop=True)
+
+            #  Plot one var
+            v0 = vars_list[0]
+            # plt.figure(figsize=(5, 4))
+            # tmp[v0].plot()
+            # plt.title(f"Daily Raw ERA5: {v0}")
+            # plt.show()
+            # plt.close()
+
+            if tmp[v0].isnull().all():
+                print(
+                    f"⚠️ Warning: All NaNs in {v0} for cube {key}. Check spatial extent!"
+                )
+
             cube_features.append(tmp)
+
+        # Check time alignment
+        # first_time = cube_features[0].time_sentinel_2_l2a
+
+        # for i, feat in enumerate(cube_features[1:], start=1):
+        #     if not first_time.equals(feat.time_sentinel_2_l2a):
+        #         print(f"⚠️ Zeit-Mismatch gefunden in Feature Index {i}!")
+        #         # Optional: Zeige die Differenz
+        #         diff = np.setdiff1d(feat.time_sentinel_2_l2a.values, first_time.values)
+        #         print(f"Abweichende Zeitstempel: {diff}")
+        #     else:
+        #         print(f"✅ Feature {i} ist zeitlich perfekt ausgerichtet.")
 
         # Merge all ERA5 vars for this cube
         era5_merged = xr.merge(cube_features)
@@ -202,7 +233,6 @@ def run_processing_pipeline(cubes, era5_cubes, output_dir, info_base="processing
     print("Global vh max: ", global_vh_max)
 
     # 0.2 Prepare Global ERA5 Stats (Phase 1)
-    # stats_path = "../training_cubes_test/global_era5_stats.json"
     stats_path = os.path.join(output_dir, "global_era5_stats.json")
     if os.path.exists(stats_path):
         print(f"-> Loading existing ERA5 global stats from {stats_path}")
@@ -230,7 +260,7 @@ def run_processing_pipeline(cubes, era5_cubes, output_dir, info_base="processing
         ds = cubes.pop(key)
         cube_id = key
 
-        info_dir = os.path.join(info_base, f"{n:03d}_{cube_id}")
+        info_dir = os.path.join(info_base, cube_id)
         os.makedirs(info_dir, exist_ok=True)
 
         stdout_buffer = io.StringIO()
@@ -313,34 +343,39 @@ def run_processing_pipeline(cubes, era5_cubes, output_dir, info_base="processing
 
             # --- STAGE 8: ERA5 CLIMATE DATA MERGING ---
             print("Step 8: Merging and Standardizing ERA5 Climate Data...")
-            # era5_path = f"../training_cubes_test/era5/{cube_id}_era5.zarr"
             era5_path = os.path.join(output_dir, "era5", f"{cube_id}_era5.zarr")
+
             if os.path.exists(era5_path):
-                era5_ds = xr.open_zarr(era5_path, consolidated=True)
+                # 1. Load daily data
+                era5_daily = xr.open_zarr(era5_path, consolidated=True)
+
+                # 2. Aggreagtion to 5 day raster of Sentinel data
+                vars_list = list(era5_daily.data_vars)
+                era5_resampled = aggregate_era5_metrics_new(era5_daily, ds, vars_list)
 
                 # Make sure that they have same temporal resolution
-                era5_ds = era5_ds.reindex(
+                era5_resampled = era5_resampled.reindex(
                     {"time_sentinel_2_l2a": ds.time_sentinel_2_l2a},
                     method="nearest",
                     tolerance=pd.Timedelta(days=1),
                 )
 
                 # Normalize ERA5
-                era5_ds = normalize_era5(era5_ds, global_era5_stats)
+                era5_resampled = normalize_era5(era5_resampled, global_era5_stats)
 
                 # Delete encodings to avoid conflicts
-                for v in era5_ds.data_vars:
-                    era5_ds[v].encoding = {}
+                for v in era5_resampled.data_vars:
+                    era5_resampled[v].encoding = {}
 
                 era5_valid_chunks = {
                     dim: chunks
                     for dim, chunks in ds.chunks.items()
-                    if dim in era5_ds.dims
+                    if dim in era5_resampled.dims
                 }
-                era5_ds = era5_ds.chunk(era5_valid_chunks)
+                era5_resampled = era5_resampled.chunk(era5_valid_chunks)
 
                 # Merge
-                ds = xr.merge([ds, era5_ds], compat="override")
+                ds = xr.merge([ds, era5_resampled], compat="override")
                 ds = ds.unify_chunks()
                 print("✅ ERA5 merged and standardized using global stats.")
             else:
@@ -459,12 +494,17 @@ def save_stats_to_json(stats, file_path):
     """
 
     def convert_types(obj):
-        # Convert NumPy floats to Python floats for JSON compatibility
-        if isinstance(obj, (np.float32, np.float64)):
-            return float(obj)
+        if isinstance(obj, np.generic):
+            return obj.item()
         elif isinstance(obj, dict):
             return {k: convert_types(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [convert_types(i) for i in obj]
         return obj
+
+    directory = os.path.dirname(file_path)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
 
     clean_stats = convert_types(stats)
 
@@ -529,7 +569,7 @@ if __name__ == "__main__":
     ERA5_PATH = "/net/data/arceme/era5_land/"
     BUCKET_NAME = "ARCEME-DC-1"
     # OUTPUT_DIR = "../training_cubes"
-    OUTPUT_DIR = "/scratch/sloeblein_new"
+    OUTPUT_DIR = "/scratch/sloeblein"
     pei_cube_name = "PEICube_era5land.zarr"
     t2_cube_name = "t2_ERA5land.zarr"
     tp_cube_name = "tp_ERA5land.zarr"
@@ -603,7 +643,7 @@ if __name__ == "__main__":
                 cubes=cubes,
                 era5_cubes=era5_cubes,  # Ensure this is loaded
                 output_dir=OUTPUT_DIR,
-                info_base="processing_info",
+                info_base="processing_info_new",
             )
             print("\n" + "=" * 60)
             print("🚀 PIPELINE EXECUTION FINISHED")

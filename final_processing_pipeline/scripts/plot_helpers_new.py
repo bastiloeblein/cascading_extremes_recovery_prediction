@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import xarray as xr
-from typing import Tuple, Optional, Union
+from typing import Tuple, Optional, Union, List
 import pandas as pd
 import numpy as np
 
@@ -22,7 +22,7 @@ def find_cloud_free_indices(ds, threshold=0.99):
 
     print(f"Found cloudfree timesteps (> {threshold*100}%): {count}")
 
-    return indices
+    return indices.tolist()
 
 
 def plot_acquisition_timelines(ds):
@@ -197,132 +197,83 @@ def plot_rgb(
     timestep: int,
     time_dim: str = "time_sentinel_2_l2a",
     bands: Tuple[str, str, str] = ("B04", "B03", "B02"),
+    ax: Optional[plt.Axes] = None,
     stretch_pct: Tuple[int, int] = (2, 98),
     figsize: Tuple[int, int] = (10, 6),
     cloud_comp: bool = False,
     title_prefix: Optional[str] = "Timestep",
-) -> Union[None, str]:
-    """
-    Plots a static true-color (RGB) composite for a specific timestep
-    from a Sentinel-2 xarray.Dataset. Optionally plots a cloud mask comparison.
+) -> plt.Figure:
 
-    Parameters
-    ----------
-    ds : xarray.Dataset
-        Must have a time coordinate `time_dim` and DataArrays for the three bands.
-    timestep : int
-        The time index to plot (must be valid for ds[time_dim]).
-    time_dim : str
-        Name of the time dimension (default 'time_sentinel_2_l2a').
-    bands : tuple of str
-        The (red, green, blue) band names in ds (default ('B04','B03','B02')).
-    stretch_pct : tuple of int
-        Percentiles for contrast stretch (default 2nd to 98th).
-    figsize : tuple
-        Matplotlib figure size.
-    cloud_comp : bool
-        If True, plots the RGB image and the cloud mask comparison side-by-side.
-    title_prefix : str or None
-        Prefix for the figure title (used by interactive function).
+    def error_fig(msg):
+        fig, ax_err = plt.subplots(figsize=(6, 2))
+        ax_err.text(0.5, 0.5, f"ERROR: {msg}", color="red", ha="center", va="center")
+        ax_err.axis("off")
+        return fig
 
-    Returns
-    -------
-    None or str
-        None on success, or an error message string if the timestep is invalid.
-    """
+    # 1. Validation
+    if time_dim not in ds.coords or not 0 <= timestep < len(ds.coords[time_dim]):
+        return error_fig(f"Timestep {timestep} out of range")
 
-    # Helper function to percentile‐stretch one (y,x) slice
     def stretch_arr(band):
         arr = band.compute().astype("float32")
         p2, p98 = np.percentile(arr, stretch_pct)
-        return np.clip((arr - p2) / (p98 - p2), 0, 1)
+        diff = p98 - p2
+        if diff == 0:
+            diff = 1.0
+        return np.clip((arr - p2) / diff, 0, 1)
 
-    # 1. Input Validation
-    if not 0 <= timestep < len(ds.coords[time_dim]):
-        return f"Timeindex {timestep} out of range for dimension '{time_dim}' (size {len(ds.coords[time_dim])})."
-
-    # 2. Subset data for the given timestep
+    # 2. Subset & RGB Creation
     subset = ds.isel({time_dim: timestep})
-    time_value_raw = subset[time_dim].item()
-
-    time_formatted = pd.to_datetime(time_value_raw).strftime("%Y-%m-%d")
-
     try:
-        r, g, b = subset[bands[0]], subset[bands[1]], subset[bands[2]]
-    except KeyError as e:
-        return f"One or more bands not found in dataset: {e}"
+        time_val = pd.to_datetime(subset[time_dim].item()).strftime("%Y-%m-%d")
+        r = stretch_arr(subset[bands[0]])
+        g = stretch_arr(subset[bands[1]])
+        b = stretch_arr(subset[bands[2]])
+        rgb = np.dstack([r, g, b])
+    except Exception as e:
+        return error_fig(str(e))
 
-    # 3. Create RGB array (stretched)
-    rgb = np.dstack(
-        [stretch_arr(r).values, stretch_arr(g).values, stretch_arr(b).values]
-    )
-
-    # 4. Plotting Logic
-
-    if cloud_comp:
-        # --- Cloud Comparison Logic ---
-        try:
-            scl = subset["SCL"]
-            cloud_mask = subset["cloud_mask"]
-        except KeyError as e:
-            return f"Required variable for cloud comparison missing: {e}. Set cloud_comp=False or check dataset."
-
-        # Binary masks
-        is_cloud_scl = scl.isin([3, 8, 9, 10])  # cloud classes SCL
-        is_external_cloud = cloud_mask.isin([1, 2, 3])  # cloud classes cloud_mask
-
-        # Calculate difference and agreement masks for the overlay
-        scl_only_mask = (
-            (is_cloud_scl & ~is_external_cloud).astype(float).values.squeeze()
-        )
-        external_only_mask = (
-            (is_external_cloud & ~is_cloud_scl).astype(float).values.squeeze()
-        )
-        agreement_mask = (
-            (is_external_cloud & is_cloud_scl).astype(float).values.squeeze()
-        )
-
-        # Create the RGB overlay (Red=SCL Only, Green=External Only, Blue=Agreement)
-        overlay = np.dstack(
-            [
-                scl_only_mask,
-                external_only_mask,
-                agreement_mask,
-            ]
-        )
-
-        # Plotting side by side (2 plots)
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=figsize, constrained_layout=True)
-
-        # Left Plot: RGB ONLY
-        ax1.imshow(rgb)
-        ax1.set_title("True Color (RGB) Image", fontsize=12)
-        ax1.axis("off")
-
-        # Right Plot: RGB + Mask Comparison Overlay
-        ax2.imshow(rgb)
-        ax2.imshow(overlay, alpha=0.5)
-
-        ax2.set_title(
-            "Mask Comparison\n" "Red: SCL Only | Green: External Only | Blue: Both",
-            fontsize=12,
-        )
-        ax2.axis("off")
-
-        fig.suptitle(f"{title_prefix}: {time_formatted}", fontsize=14, y=1.02)
-
+    # 3. Setup Axes & Figure
+    if ax is not None:
+        ax1 = ax
+        fig = ax.get_figure()
+        cloud_comp = False
     else:
-        # Plotting RGB ONLY (1 plot)
-        fig, ax1 = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
+        if cloud_comp:
+            fig, (ax1, ax2) = plt.subplots(
+                1, 2, figsize=figsize, constrained_layout=True
+            )
+        else:
+            fig, ax1 = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
 
-        ax1.imshow(rgb)
-        ax1.set_title(
-            f"True Color (RGB) Image\n{title_prefix}: {time_formatted}", fontsize=14
-        )
-        ax1.axis("off")
+    # 4. Plotting
+    try:
+        if cloud_comp:
+            # SCL/Cloud Mask Logik
+            ax1.imshow(rgb)
+            ax1.axis("off")
 
-    plt.show()
-    return None
+            is_cloud_scl = subset["SCL"].isin([3, 8, 9, 10])
+            is_ext_cloud = subset["cloud_mask"].isin([1, 2, 3])
+            overlay = np.dstack(
+                [
+                    (is_cloud_scl & ~is_ext_cloud).astype(float),
+                    (is_ext_cloud & ~is_cloud_scl).astype(float),
+                    (is_ext_cloud & is_cloud_scl).astype(float),
+                ]
+            )
+            ax2.imshow(rgb)
+            ax2.imshow(overlay, alpha=0.5)
+            ax2.axis("off")
+            fig.suptitle(f"{title_prefix}: {time_val}", fontsize=14)
+        else:
+            ax1.imshow(rgb)
+            ax1.set_title(f"RGB: {time_val}" if ax is None else "")
+            ax1.axis("off")
+
+        return fig
+    except Exception as e:
+        return error_fig(f"Plotfehler: {str(e)}")
 
 
 def plot_statistical_outliers(ds, time_index, show=True):
@@ -389,7 +340,7 @@ def plot_nan_distribution(ds_old, ds_new, var_name, cutoff_date):
 
     time_axis = ds_old[time_dim].values
 
-    plt.figure(figsize=(15, 5))
+    fig = plt.figure(figsize=(15, 5))
 
     # Flächen füllen für bessere Sichtbarkeit
     plt.fill_between(
@@ -422,6 +373,8 @@ def plot_nan_distribution(ds_old, ds_new, var_name, cutoff_date):
     plt.tight_layout()
     plt.show()
 
+    return fig
+
 
 def plot_spatial_nan_frequency(ds, var_name, cutoff_date):
     """
@@ -437,7 +390,7 @@ def plot_spatial_nan_frequency(ds, var_name, cutoff_date):
     nan_freq = (context[var_name].isnull().mean(dim=time_dim) * 100).compute()
 
     # 3. Plotten
-    plt.figure(figsize=(10, 8))
+    fig = plt.figure(figsize=(10, 8))
     im = plt.imshow(
         nan_freq, cmap="RdYlGn_r", vmin=0, vmax=100
     )  # Rot = Häufig NaN, Grün = Fast immer Daten
@@ -459,4 +412,133 @@ def plot_spatial_nan_frequency(ds, var_name, cutoff_date):
         bbox=dict(boxstyle="round", fc="black", alpha=0.6),
     )
 
-    plt.show()
+    return fig
+
+
+def plot_variable_analysis(
+    ds: xr.Dataset,
+    variables_to_plot: Union[str, List[str]],
+    time_dim: str = "time_sentinel_2_l2a",
+    spatial_dims: Tuple[str, ...] = ("x", "y"),
+    ax: Optional[plt.Axes] = None,  # Neu: Optionaler Parameter für Subplots
+    plot_ts_mean: Union[bool, List[bool]] = True,
+    plot_ts_median: Union[bool, List[bool]] = False,
+    plot_ts_std: Union[bool, List[bool]] = False,
+    title: str = "Multi-Variable Time Series Analysis",
+    figsize: Tuple[int, int] = (12, 6),
+) -> plt.Axes:
+    """
+    Adaptive plotting function for 3D (S1/S2) and 1D (ERA5) data.
+    Can be used as a standalone plot or as a subfigure in a larger grid.
+    """
+    if isinstance(variables_to_plot, str):
+        variables_to_plot = [variables_to_plot]
+
+    n_vars = len(variables_to_plot)
+    colors = plt.colormaps.get_cmap("tab10").colors
+
+    # --- Setup: Check if we are plotting in a subfigure ---
+    standalone = False
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+        standalone = True
+
+    # Helper for booleans
+    def expand_bools(param, length):
+        if isinstance(param, bool):
+            return [param] * length
+        return param
+
+    p_mean = expand_bools(plot_ts_mean, n_vars)
+    p_median = expand_bools(plot_ts_median, n_vars)
+    p_std = expand_bools(plot_ts_std, n_vars)
+
+    periods = {
+        "Drought": (
+            pd.to_datetime(ds.attrs["drought_start_date"]),
+            pd.to_datetime(ds.attrs["drought_end_date"]),
+            "red",
+        ),
+        "Precipitation": (
+            pd.to_datetime(ds.attrs["precip_start_date"]),
+            pd.to_datetime(ds.attrs["precip_end_date"]),
+            "blue",
+        ),
+    }
+
+    # --- 4. Period Highlighting (Adaptive for Single Days) ---
+    for name, (start, end, col) in periods.items():
+        if start == end:
+            # Event lasts only one day: Draw a dashed vertical line
+            ax.axvline(
+                start,
+                color=col,
+                linestyle="--",
+                linewidth=2,
+                alpha=0.8,
+                zorder=2,
+                label=f"{name} (Single Day)",
+            )
+        else:
+            # Event lasts multiple days: Draw the shaded area
+            ax.axvspan(
+                start, end, facecolor=col, alpha=0.1, zorder=0, label=f"{name} Period"
+            )
+
+    for i, var_name in enumerate(variables_to_plot):
+        data = ds[var_name]
+        color = colors[i % len(colors)]
+        has_spatial = all(dim in data.dims for dim in spatial_dims)
+
+        if has_spatial:
+            if "is_veg" in ds:
+                data = data.where(ds.is_veg == 1)
+
+            display_val = data.mean(dim=spatial_dims).compute() if p_mean[i] else None
+            if p_std[i] and display_val is not None:
+                std_val = data.std(dim=spatial_dims).compute()
+                ax.fill_between(
+                    display_val[time_dim].values,
+                    display_val - std_val,
+                    display_val + std_val,
+                    color=color,
+                    alpha=0.15,
+                    zorder=1,
+                )
+            if p_median[i]:
+                data.median(dim=spatial_dims).compute().plot.line(
+                    ax=ax,
+                    color=color,
+                    linestyle="--",
+                    alpha=0.6,
+                    label=f"{var_name} (Med)",
+                )
+        else:
+            # for 1D data (ERA5)
+            display_val = data.squeeze().compute() if p_mean[i] else None
+
+        if display_val is not None:
+            label = f"{var_name}" + (" (Mean)" if has_spatial else "")
+            display_val.plot.line(
+                ax=ax,
+                label=label,
+                color=color,
+                linewidth=1.5,
+                marker="o",  # Adds dots to each data point
+                markersize=4,  # Size of the dots
+                alpha=0.8,
+                zorder=5,
+            )
+
+    for name, (start, end, col) in periods.items():
+        ax.axvspan(start, end, facecolor=col, alpha=0.1, zorder=0, label=f"{name}")
+
+    ax.set_title(title)
+    ax.legend(loc="upper left", bbox_to_anchor=(1, 1), fontsize="small")
+    ax.grid(True, alpha=0.3)
+
+    if standalone:
+        plt.tight_layout()
+        plt.show()
+
+    return ax

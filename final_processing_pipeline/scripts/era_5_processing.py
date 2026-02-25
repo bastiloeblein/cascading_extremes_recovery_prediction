@@ -178,6 +178,10 @@ def aggregate_era5_metrics_new(
 
     # Rename dimensions and restrict to target dim
     era5_res = era5_res.rename({era5_time_dim: target_time_dim})
+
+    ds_target[target_time_dim] = ds_target[target_time_dim].dt.floor("D")
+    era5_res[target_time_dim] = era5_res[target_time_dim].dt.floor("D")
+
     era5_aligned = era5_res.reindex(
         {target_time_dim: ds_target[target_time_dim]}, method=None
     )

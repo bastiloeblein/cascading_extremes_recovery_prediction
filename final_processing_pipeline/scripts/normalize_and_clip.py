@@ -26,7 +26,7 @@ def calculate_global_era5_stats(
     cubes: Dict[str, xr.Dataset], vars_to_norm: List[str]
 ) -> Dict[str, Dict[str, float]]:
     """
-    Calculates global percentiles for ERA5 variables across all cubes.
+    Calculates Z-score parameters for ERA5 variables across all cubes.
     Expects squeezed 1D scalar time series (time dimension only).
     """
     stats = {}
@@ -50,43 +50,40 @@ def calculate_global_era5_stats(
         if all_time_values:
             combined_values = np.concatenate(all_time_values)
 
-            # Robust scaling using percentiles to mitigate ERA5 outliers
-            p_min = np.nanpercentile(combined_values, 0.01)
-            p_max = np.nanpercentile(combined_values, 99.99)
+            # Calculate Z-Score Parameters
+            mean_val = np.mean(combined_values)
+            std_val = np.std(combined_values)
 
-            # Assert that range is valid to avoid division by zero
-            assert (
-                p_max > p_min
-            ), f"Invalid range for variable {var}: min {p_min} == max {p_max}"
+            # Prevent division by zero
+            if std_val == 0:
+                std_val = 1.0
 
-            stats[var] = {"p_min": float(p_min), "p_max": float(p_max)}
+            stats[var] = {"mean": float(mean_val), "std": float(std_val)}
+            print(f"✅ {var}: Mean={mean_val:.2f}, Std={std_val:.2f}")
         else:
-            print(f"Warning: No valid data found for variable {var} across all cubes.")
+            print(f"⚠️ No data for {var}")
 
     return stats
 
 
-def normalize_era5(ds: xr.Dataset, stats: Dict[str, Dict[str, float]]) -> xr.Dataset:
-    """Applies robust min-max scaling and clips outliers to [0, 1]."""
-    for var, s in stats.items():
-        if var not in ds.data_vars:
-            continue
+def normalize_era5(ds, stats):
+    """Applies robust z-score normalization"""
+    for ds_var in ds.data_vars:
+        matched_stat = None
+        for stat_key in stats.keys():
+            if ds_var.startswith(stat_key):
+                matched_stat = stats[stat_key]
+                break
 
-        p_min = s["p_min"]
-        p_max = s["p_max"]
+        if matched_stat:
+            # Get params from stats
+            m = matched_stat["mean"]
+            s = matched_stat["std"]
 
-        # Apply normalization
-        normalized = (ds[var] - p_min) / (p_max - p_min)
+            # Z-Score Standardization
+            normalized = (ds[ds_var] - m) / s
 
-        # Assert: Check if we are creating infinite values
-        assert not np.isinf(
-            normalized
-        ).any(), f"Normalization produced Inf values in {var}"
-
-        ds[var] = normalized.astype("float32")
-
-        # # Clip to [0, 1] to handle values outside the 0.01-99.99 percentile range
-        # ds[var] = normalized.clip(0, 1).astype("float32")
+            ds[ds_var] = normalized.astype("float32")
 
     return ds
 
