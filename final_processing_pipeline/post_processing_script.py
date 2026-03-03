@@ -9,7 +9,11 @@ from scripts.plot_helpers_new import (
     plot_nan_distribution,
     plot_spatial_nan_frequency,
 )
-from scripts.interpolation import trim_to_first_s2_acquisition, interpolate_context_only
+from scripts.interpolation import (
+    trim_to_first_s2_acquisition,
+    interpolate_context_only,
+    create_final_binary_masks,
+)
 from scripts.sentinel_2_processing import get_s2_quality_masks
 import xarray as xr
 from scripts.plot_helpers import plot_landcover
@@ -19,6 +23,7 @@ import s3fs
 import fsspec
 import pandas as pd
 import numpy as np
+import json
 
 
 # --- 1. HTML REPORT FUNCTION ---
@@ -97,6 +102,27 @@ if __name__ == "__main__":
     CUBE_DIR = "/scratch/sloeblein"
     OUTPUT_DIR = "/scratch/sloeblein/postprocessed"
     INFO_DIR = "processing_info_new"
+
+    # Initialize stats dict for nan reduction calculation
+    all_cubes_stats = {}
+
+    # Pixel counts for nan reduction calculation
+    global_totals = {
+        "kNDVI": {
+            "pre_ctx_nans": 0,
+            "post_ctx_nans": 0,
+            "ctx_total": 0,
+            "after_nans": 0,
+            "after_total": 0,
+        },
+        "vv": {
+            "pre_ctx_nans": 0,
+            "post_ctx_nans": 0,
+            "ctx_total": 0,
+            "after_nans": 0,
+            "after_total": 0,
+        },
+    }
 
     # Define vars of interest
     S2_VARS = ["NDVI", "kNDVI", "CIRE", "IRECI", "NDWI", "NDMI", "NIRv"]
@@ -207,14 +233,14 @@ if __name__ == "__main__":
                 # 3.3 Select random valid index
                 idx_s1 = int(random.choice(valid_indices))
                 print(
-                    f"Selected Index: {idx} (NaN-Proportion: {nan_ratio[idx].values:.2%})"
+                    f"Selected Index: {idx_s1} (NaN-Proportion: {nan_ratio[idx_s1].values:.2%})"
                 )
             else:
                 print("No timestep with < 10% NaNs found!")
                 # Fallback: Take timestep with fewest nans
                 idx_s1 = int(nan_ratio.argmin())
                 print(
-                    f"Using best available timestep: {idx} ({nan_ratio[idx].values:.2%} NaNs)"
+                    f"Using best available timestep: {idx_s1} ({nan_ratio[idx_s1].values:.2%} NaNs)"
                 )
 
             for var in S1_VARS:
@@ -300,15 +326,19 @@ if __name__ == "__main__":
             ds_ctx = ds.sel(time_sentinel_2_l2a=slice(None, cutoff_date))
             ds_intp_ctx = ds_intp.sel(time_sentinel_2_l2a=slice(None, cutoff_date))
 
+            # --- Quality Metrics ---
+            cube_stats = {}
             for v_comp in ["kNDVI", "vv"]:
                 # 1. Calculate data
-                total_pixels_ctx = ds_ctx[v_comp].size
-                n_before = int(ds_ctx[v_comp].isnull().sum().compute())
-                n_after = int(ds_intp_ctx[v_comp].isnull().sum().compute())
-                n_filled = n_before - n_after
-                pct_before = n_before / total_pixels_ctx * 100
-                pct_after = n_after / total_pixels_ctx * 100
-                fill_rate = (n_filled / n_before * 100) if n_before > 0 else 0
+                ctx_total = ds_ctx[v_comp].size
+                ctx_nans_before = int(ds_ctx[v_comp].isnull().sum().compute())
+                ctx_nans_after = int(ds_intp_ctx[v_comp].isnull().sum().compute())
+                n_filled = ctx_nans_before - ctx_nans_after
+                pct_before = ctx_nans_before / ctx_total * 100
+                pct_after = ctx_nans_after / ctx_total * 100
+                fill_rate = (
+                    (n_filled / ctx_nans_before * 100) if ctx_nans_before > 0 else 0
+                )
 
                 # 2. Format Dashboard
                 print("\n" + "═" * 60)
@@ -316,20 +346,80 @@ if __name__ == "__main__":
                 print(f"📅 Period: Start to {cutoff_date.strftime('%Y-%m-%d')}")
                 print("─" * 60)
                 print(
-                    f"  NaNs before:    {n_before:>12,} ({pct_before:>6.2f}% of context)"
+                    f"  NaNs before:    {ctx_nans_before:>12,} ({pct_before:>6.2f}% of context)"
                 )
                 print(
-                    f"  NaNs after :    {n_after:>12,} ({pct_after:>6.2f}% of context)"
+                    f"  NaNs after :    {ctx_nans_after:>12,} ({pct_after:>6.2f}% of context)"
                 )
                 print(f"  {'-' * 50}")
                 print(f"  ✅ FILLED:  {n_filled:>12,} ({fill_rate:.1f}% of gaps)")
                 print("═" * 60 + "\n")
+
+                # Period after cutoff
+                ds_after = ds_intp.sel(
+                    time_sentinel_2_l2a=slice(cutoff_date + pd.Timedelta(days=1), None)
+                )
+                after_total = ds_after[v_comp].size
+                after_nans = int(ds_after[v_comp].isnull().sum().compute())
+
+                # Save to cube-specific dict
+                cube_stats[v_comp] = {
+                    "ctx_nans_before": ctx_nans_before,
+                    "ctx_nans_after": ctx_nans_after,
+                    "ctx_total_pixels": ctx_total,
+                    "after_cutoff_nans": after_nans,
+                    "after_cutoff_total_pixels": after_total,
+                }
+
+                # Add to global dict
+                global_totals[v_comp]["pre_ctx_nans"] += ctx_nans_before
+                global_totals[v_comp]["post_ctx_nans"] += ctx_nans_after
+                global_totals[v_comp]["ctx_total"] += ctx_total
+                global_totals[v_comp]["after_nans"] += after_nans
+                global_totals[v_comp]["after_total"] += after_total
+
+            # Add to global dict
+            all_cubes_stats[cube_id] = cube_stats
 
             fig = plot_nan_distribution(ds, ds_intp, "kNDVI", cutoff_date)
             save_plot_to_report(fig, report_sequence, stdout_buffer)
 
             fig = plot_nan_distribution(ds, ds_intp, "vv", cutoff_date)
             save_plot_to_report(fig, report_sequence, stdout_buffer)
+
+            # Create final masks
+            ds_final = create_final_binary_masks(ds_intp)
+
+            # Fill NANs
+            # ds_final = ds_final.fillna(0.0) # as variables are normalized this is the mean
+
+            # Assure variable dtypes
+            uint8_vars = ["ESA_LC", "is_veg", "mask_s1", "mask_s2", "target_mask"]
+
+            for var in list(ds_final.data_vars):
+                ds_final[var].encoding = {}
+                if var in ["s1_final_mask", "s2_final_mask"]:
+                    ds_final = ds_final.drop_vars(var)
+                    continue
+                if var in uint8_vars or var.endswith("_count"):
+                    ds_final[var] = ds_final[var].astype("uint8")
+                else:
+                    ds_final[var] = ds_final[var].astype("float32")
+
+            # Unify chunks for saving
+            target_chunks = {"time_sentinel_2_l2a": 1, "x": 250, "y": 250}
+            for var in ds_final.data_vars:
+                var_chunks = {
+                    d: target_chunks[d]
+                    for d in ds_final[var].dims
+                    if d in target_chunks
+                }
+                ds_final[var] = ds_final[var].chunk(var_chunks)
+
+            # Save to disk
+            save_path = os.path.join(OUTPUT_DIR, f"{cube_id}_postprocessed.zarr")
+            ds_final.to_zarr(save_path, mode="w", consolidated=True)
+            print(f"✅ SUCCESS: Postprocessed cube saved to {save_path}")
 
         except Exception as e:
             print(f"\nERROR: {str(e)}")
@@ -345,3 +435,48 @@ if __name__ == "__main__":
             stdout_buffer.close()
             plt.close("all")
             print(f"Report for {cube_id} saved to {info_dir}")
+
+    # --- FINALE Evaluation over all cubes---
+    print("\n" + "█" * 80)
+    print("      GLOBAL POST-PROCESSING SUMMARY (ALL CUBES)      ")
+    print("█" * 80)
+
+    for var in ["kNDVI", "vv"]:
+        g = global_totals[var]
+
+        # Berechnungen
+        total_ctx_reduction = (
+            (g["pre_ctx_nans"] - g["post_ctx_nans"]) / g["pre_ctx_nans"] * 100
+            if g["pre_ctx_nans"] > 0
+            else 0
+        )
+        final_ctx_nan_pct = g["post_ctx_nans"] / g["ctx_total"] * 100
+        after_nan_pct = (
+            g["after_nans"] / g["after_total"] * 100 if g["after_total"] > 0 else 0
+        )
+
+        print(f"\n➔ VARIABLE: {var}")
+        print("-" * 30)
+        print("  CONTEXT WINDOW (Pre-Event):")
+        print(f"    Total Pixels:     {g['ctx_total']:>15,}")
+        print(
+            f"    NaNs Before:      {g['pre_ctx_nans']:>15,} ({g['pre_ctx_nans']/g['ctx_total']*100:>5.2f}%)"
+        )
+        print(
+            f"    NaNs After:       {g['post_ctx_nans']:>15,} ({final_ctx_nan_pct:>5.2f}%)"
+        )
+        print(
+            f"    ✅ REDUCTION:     {total_ctx_reduction:>14.1f}% of missing values filled"
+        )
+
+        print("\n  AFTER CUTOFF (Event/Post-Event):")
+        print(f"    Total Pixels:     {g['after_total']:>15,}")
+        print(f"    Remaining NaNs:   {g['after_nans']:>15,} ({after_nan_pct:>5.2f}%)")
+
+    print("\n" + "█" * 80)
+
+    # Save statistics as json
+    stats_save_path = os.path.join(OUTPUT_DIR, "global_postprocessing_stats.json")
+    with open(stats_save_path, "w") as f:
+        json.dump(all_cubes_stats, f, indent=4)
+    print(f"Detailed stats for all cubes saved to {stats_save_path}")

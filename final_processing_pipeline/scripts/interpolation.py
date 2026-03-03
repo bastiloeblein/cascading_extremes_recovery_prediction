@@ -81,3 +81,41 @@ def interpolate_context_only(
     ds_final.attrs = ds.attrs
 
     return ds_final
+
+
+def create_final_binary_masks(ds: xr.Dataset) -> xr.Dataset:
+    """
+    Creates final uint8 masks for S1 and S2 data.
+    1 = Valid data (Original or Interpolated)
+    0 = Gap (Gap too large, leading NaNs, or persistent missing data)
+    """
+    print("--- Creating Final Binary Masks & Validating ---")
+
+    # 1. Count NaNs before masking (Basis for the integrity check)
+    expected_s2_nans = int(ds["kNDVI"].isnull().sum().compute())
+    expected_s1_nans = int(ds["vv"].isnull().sum().compute())
+
+    # 2. Create Masks (notnull() returns True/1 for data, False/0 for NaN)
+    ds["mask_s2"] = ds["kNDVI"].notnull().astype("uint8")
+    ds["mask_s1"] = ds["vv"].notnull().astype("uint8")
+
+    # The target_mask is used for the Loss function during training.
+    # It is identical to the S2 mask since kNDVI is our target.
+    ds["target_mask"] = ds["mask_s2"]
+
+    # 3. Validation via Assert
+    # We check if the number of zeros in the new masks matches the previous NaN count
+    actual_s2_zeros = int((ds["mask_s2"] == 0).sum().compute())
+    actual_s1_zeros = int((ds["mask_s1"] == 0).sum().compute())
+
+    assert (
+        expected_s2_nans == actual_s2_zeros
+    ), f"S2 Mask mismatch! NaNs: {expected_s2_nans}, Mask-Zeros: {actual_s2_zeros}"
+    assert (
+        expected_s1_nans == actual_s1_zeros
+    ), f"S1 Mask mismatch! NaNs: {expected_s1_nans}, Mask-Zeros: {actual_s1_zeros}"
+
+    print(f"✅ S2 Mask created: {expected_s2_nans} gaps masked.")
+    print(f"✅ S1 Mask created: {expected_s1_nans} gaps masked.")
+
+    return ds
