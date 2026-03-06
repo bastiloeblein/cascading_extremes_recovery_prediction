@@ -1,0 +1,26 @@
+experiment_name: "first_model"
+data:
+  patch_size: 256
+  context_length: 10
+  target_length: 5
+  variables:
+    s2: ["kNDVI", "CIRE", "IRECI", "NDWI", "NDMI", "NIRv"]   # alle
+    s1: ["vv", "vh"]
+    era5: ["t2m_mean", "t2mmax_max", "t2mmin_min", # Temperature
+    "tp_dailymean_mean", "tp_dailymax_max",        # Precipitation
+    "pei_30_mean", "pei_90_mean"]                  # Drought index
+    static: ["COP_DEM", "is_veg"]                  # Static vars (ESA_LC not included because one hot encoding is done in dataloader)
+training:
+  start_learn_rate: 0.0001
+  batch_size: 32
+  max_epochs: 150
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"           # Nutzt Mixed Precision (spart VRAM auf der A6000)
+model:
+  output_channels: 1      # Wir wollen nur kNDVI vorhersagen
+  hidden_channels: [64, 64] # Zwei Layer mit je 64 Filtern
+  n_layers: 2
+  kernel: 3
+  dilation_rate: 1
+  baseline: "last_frame"  # Optionen: "last_frame", "mean_cube", "zeros"
